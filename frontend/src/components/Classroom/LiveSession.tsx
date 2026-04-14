@@ -1,84 +1,220 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   CheckCircle,
-  Terminal,
   Code,
+  Edit3,
+  Eye,
+  Lightbulb,
   RotateCcw,
   Send,
-  Zap,
-  Eye,
-  Edit3,
-  AlertTriangle,
-  Lightbulb,
-  Info
+  Wand2,
 } from "lucide-react";
-import type { TeacherSessionData } from "@/features/classroom/sessionStore";
-import CollaborativeEditor from "./CollaborativeEditor";
+import type {
+  EditorIntervention,
+  StudentOverview,
+  TeacherInterventionMode,
+  TeacherSession,
+} from "@shared/types";
+import CollaborativeEditor, {
+  type CollaborativeEditorHandle,
+} from "./CollaborativeEditor";
+import { useAuth } from "@/lib/auth-context";
+import { classroomService } from "@/services/classroom";
+import { useSessionBroadcastEvent } from "@/lib/liveblocks";
 
 interface LiveSessionProps {
-  sessionData: TeacherSessionData;
+  session: TeacherSession;
+  student: StudentOverview;
   onExit: () => void;
+  onResolveHelp: () => Promise<void>;
+  onResetCode: () => Promise<void>;
+  onCompleteSession?: () => Promise<void>;
 }
 
-const LiveSession = ({ sessionData, onExit }: LiveSessionProps) => {
-  const [activeTab, setActiveTab] = useState<"info" | "chat">("info");
+const modeButtonStyles: Record<TeacherInterventionMode, string> = {
+  view: "bg-white text-[#11110f] border-[#11110f]",
+  suggest: "bg-[#ccff00] text-[#11110f] border-[#11110f]",
+  edit: "bg-[#11110f] text-[#ccff00] border-[#11110f]",
+};
+
+const LiveSession = ({
+  session,
+  student,
+  onExit,
+  onResolveHelp,
+  onResetCode,
+  onCompleteSession,
+}: LiveSessionProps) => {
+  const { profile } = useAuth();
+  const editorRef = useRef<CollaborativeEditorHandle | null>(null);
+  const broadcastSessionEvent = useSessionBroadcastEvent();
+  const [mode, setMode] = useState<TeacherInterventionMode>("view");
+  const [commentText, setCommentText] = useState("");
+  const [suggestedCode, setSuggestedCode] = useState("");
+  const [isSavingAction, setIsSavingAction] = useState(false);
+  const [teacherNotice, setTeacherNotice] = useState<string | null>(null);
   const [messages, setMessages] = useState([
     {
       sender: "System",
-      text: `Session started with ${sessionData.studentName}`,
+      text: `Teacher focused on ${student.profile?.fullName ?? "student"}.`,
       time: "Now",
     },
   ]);
   const [newMessage, setNewMessage] = useState("");
-  const [sessionDuration, setSessionDuration] = useState(0);
+  const [editBaseline, setEditBaseline] = useState("");
+  const [sessionDuration, setSessionDuration] = useState("00:00");
+
+  const currentTask =
+    session.taskSet.find((task) => task.taskId === student.currentTaskId)?.task ??
+    session.taskSet.find((task) => task.taskId === session.activeTaskId)?.task ??
+    session.taskSet[0]?.task;
+
+  const currentTaskId = currentTask?.id ?? student.currentTaskId ?? session.activeTaskId;
 
   useEffect(() => {
-    const timer = window.setInterval(
-      () => setSessionDuration((current) => current + 1),
-      1000,
-    );
-    return () => window.clearInterval(timer);
-  }, []);
+    if (!currentTaskId) {
+      return;
+    }
 
-  const formatTime = (seconds: number) => {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    return `${minutes.toString().padStart(2, "0")}:${remainingSeconds
-      .toString()
-      .padStart(2, "0")}`;
+    broadcastSessionEvent({
+      type: "teacher-focus",
+      studentId: student.studentId,
+      taskId: currentTaskId,
+      mode,
+    });
+  }, [broadcastSessionEvent, currentTaskId, mode, student.studentId]);
+
+  useEffect(() => {
+    if (mode === "edit") {
+      setEditBaseline(editorRef.current?.getCode() ?? "");
+    }
+  }, [mode, student.studentId, currentTaskId]);
+
+  useEffect(() => {
+    if (!session.startTime) {
+      setSessionDuration("00:00");
+      return;
+    }
+
+    const updateDuration = () => {
+      const elapsedSeconds = Math.max(
+        0,
+        Math.floor((Date.now() - new Date(session.startTime!).getTime()) / 1000),
+      );
+      const minutes = Math.floor(elapsedSeconds / 60)
+        .toString()
+        .padStart(2, "0");
+      const seconds = (elapsedSeconds % 60).toString().padStart(2, "0");
+      setSessionDuration(`${minutes}:${seconds}`);
+    };
+
+    updateDuration();
+    const timer = window.setInterval(updateDuration, 1000);
+    return () => window.clearInterval(timer);
+  }, [session.startTime]);
+
+  const pushIntervention = async (
+    type: EditorIntervention["type"],
+    options?: {
+      content?: string;
+      suggestedCode?: string;
+      beforeExcerpt?: string;
+      afterExcerpt?: string;
+      mode?: TeacherInterventionMode;
+    },
+  ) => {
+    if (!currentTaskId) {
+      return;
+    }
+
+    const selectedRange = editorRef.current?.getSelectedRange();
+    const codeSnapshot = editorRef.current?.getCode() ?? "";
+
+    setIsSavingAction(true);
+    try {
+      await classroomService.createIntervention({
+        sessionId: session.id,
+        studentId: student.studentId,
+        taskId: currentTaskId,
+        type,
+        mode: options?.mode ?? mode,
+        range: selectedRange ?? {
+          startLineNumber: 1,
+          startColumn: 1,
+          endLineNumber: 1,
+          endColumn: 1,
+        },
+        content: options?.content,
+        suggestedCode:
+          type === "suggestion"
+            ? options?.suggestedCode || codeSnapshot
+            : options?.suggestedCode,
+        beforeExcerpt: options?.beforeExcerpt,
+        afterExcerpt: options?.afterExcerpt,
+      });
+      editorRef.current?.notifyInterventionsChanged();
+      setCommentText("");
+      setSuggestedCode("");
+    } finally {
+      setIsSavingAction(false);
+    }
+  };
+
+  const handleCommitTeacherEdit = async () => {
+    const currentCode = editorRef.current?.getCode() ?? "";
+    if (!currentTaskId || currentCode === editBaseline) {
+      return;
+    }
+
+    await pushIntervention("direct_edit", {
+      content: "Teacher edited the code live in edit mode.",
+      beforeExcerpt: editBaseline,
+      afterExcerpt: currentCode,
+      suggestedCode: currentCode,
+      mode: "edit",
+    });
+
+    setEditBaseline(currentCode);
+    broadcastSessionEvent({
+      type: "student-activity",
+      studentId: student.studentId,
+      currentTaskId,
+      status: "active",
+      snippet: currentCode,
+      helpStatus: student.helpStatus,
+    });
   };
 
   const handleSendMessage = (event?: FormEvent) => {
     event?.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim()) {
+      return;
+    }
 
-    const messageText = newMessage;
     setMessages((current) => [
       ...current,
       {
-        sender: "You",
-        text: messageText,
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        sender: "Teacher",
+        text: newMessage.trim(),
+        time: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        }),
       },
     ]);
     setNewMessage("");
-
-    window.setTimeout(() => {
-      setMessages((current) => [
-        ...current,
-        {
-          sender: sessionData.studentName,
-          text: "Thanks, I’m trying that now.",
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        },
-      ]);
-    }, 1200);
   };
 
+  const statusLabel =
+    student.helpStatus === "requested"
+      ? "Needs help"
+      : student.completed
+        ? "Completed"
+        : student.status;
+
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#fafafa] text-[#11110f] font-sans selection:bg-[#ccff00] selection:text-black">
-      {/* Teacher Mode Slim Header */}
+    <div className="flex h-screen flex-col overflow-hidden bg-[#fafafa] font-sans text-[#11110f] selection:bg-[#ccff00] selection:text-black">
       <header className="z-10 flex h-14 shrink-0 items-center justify-between border-b-2 border-[#11110f] bg-white px-4">
         <div className="flex items-center gap-4">
           <button
@@ -89,247 +225,264 @@ const LiveSession = ({ sessionData, onExit }: LiveSessionProps) => {
           </button>
 
           <div className="flex items-center gap-3">
-             <div className="flex items-center gap-2">
-               <span className="flex h-3 w-3 relative">
-                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#ccff00] opacity-75"></span>
-                 <span className="relative inline-flex rounded-full h-3 w-3 bg-[#a3cc00] border border-[#11110f]"></span>
-               </span>
-               <span className="font-bold uppercase tracking-tight text-sm">Viewing: {sessionData.studentName}</span>
-             </div>
-             <span className="font-mono text-xs border-l-2 border-[#11110f] pl-3 py-1 font-bold">
-               {formatTime(sessionDuration)}
-             </span>
-             <span className="bg-[#11110f] text-[#ccff00] px-2 py-0.5 text-xs font-bold uppercase tracking-wider ml-2">
-               Teacher Mode
-             </span>
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-3 w-3">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#ccff00] opacity-75" />
+                <span className="relative inline-flex h-3 w-3 rounded-full border border-[#11110f] bg-[#a3cc00]" />
+              </span>
+              <span className="text-sm font-bold uppercase tracking-tight">
+                Viewing: {student.profile?.fullName ?? "Student"}
+              </span>
+            </div>
+            <span className="border-l-2 border-[#11110f] pl-3 py-1 font-mono text-xs font-bold">
+              {sessionDuration}
+            </span>
+            <span className="bg-[#11110f] px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-[#ccff00]">
+              {statusLabel}
+            </span>
           </div>
         </div>
 
-
-
         <div className="flex items-center gap-3">
-          <button onClick={onExit} className="border-2 border-[#11110f] bg-red-500 px-4 py-1.5 text-xs font-bold uppercase tracking-wider text-white transition hover:bg-red-600">
+          <button
+            onClick={() => void onCompleteSession?.()}
+            className="border-2 border-[#11110f] bg-rose-500 px-4 py-1.5 text-xs font-bold uppercase tracking-wider text-white transition hover:bg-rose-600"
+          >
             End Session
           </button>
         </div>
       </header>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Editor Area (Takes up remaining space) */}
         <div className="relative flex flex-1 flex-col overflow-hidden bg-white">
-          <CollaborativeEditor
-            roomId={sessionData.roomId}
-            sessionId={sessionData.sessionId}
-            userId={`mentor-${sessionData.roomId}`}
-            userName="Teacher"
-            initialCode={sessionData.initialCode}
-            role="teacher"
-          />
+          {currentTaskId ? (
+            <CollaborativeEditor
+              ref={editorRef}
+              sessionId={session.id}
+              taskId={currentTaskId}
+              workspaceStudentId={student.studentId}
+              currentUserId={profile?.id ?? `teacher-${session.id}`}
+              userName={profile?.fullName ?? "Teacher"}
+              role="teacher"
+              mode={mode}
+              initialCode={currentTask?.initialCode}
+              language={currentTask?.language}
+              announceTeacherPresence={true}
+              showInterventionTray={false}
+              onTeacherPresenceChange={setTeacherNotice}
+              onSnippetChange={(nextCode) =>
+                broadcastSessionEvent({
+                  type: "student-activity",
+                  studentId: student.studentId,
+                  currentTaskId,
+                  status: "active",
+                  snippet: nextCode,
+                  helpStatus: student.helpStatus,
+                })
+              }
+            />
+          ) : null}
         </div>
 
-        {/* Static Brutalist Right Sidebar */}
-        <aside className="flex w-96 shrink-0 flex-col border-l-2 border-[#11110f] bg-white">
-          <div className="flex border-b-2 border-[#11110f]">
-            <button
-              onClick={() => setActiveTab("info")}
-              className={`flex-1 py-3 text-sm font-bold uppercase tracking-wider border-r-2 border-[#11110f] transition-colors ${
-                activeTab === "info"
-                  ? "bg-[#ccff00] text-[#11110f]"
-                  : "bg-white text-gray-400 hover:bg-gray-50 hover:text-[#11110f]"
-              }`}
-            >
-              Context
-            </button>
-            <button
-              onClick={() => setActiveTab("chat")}
-              className={`flex-1 py-3 text-sm font-bold uppercase tracking-wider transition-colors ${
-                activeTab === "chat"
-                  ? "bg-[#ccff00] text-[#11110f]"
-                  : "bg-white text-gray-400 hover:bg-gray-50 hover:text-[#11110f]"
-              }`}
-            >
-              Chat
-            </button>
+        <aside className="flex w-[420px] shrink-0 flex-col border-l-2 border-[#11110f] bg-white">
+          <div className="border-b-2 border-[#11110f] bg-[#fafafa] p-4">
+            <div className="mb-3 text-xs font-black uppercase tracking-[0.25em] text-[#11110f]">
+              Intervention Mode
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {(["view", "suggest", "edit"] as const).map((nextMode) => (
+                <button
+                  key={nextMode}
+                  type="button"
+                  onClick={() => setMode(nextMode)}
+                  className={`border-2 px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] ${mode === nextMode ? modeButtonStyles[nextMode] : "bg-white text-[#11110f] border-[#11110f]"}`}
+                >
+                  {nextMode === "view" ? <Eye className="mx-auto mb-1 h-4 w-4" /> : null}
+                  {nextMode === "suggest" ? <Lightbulb className="mx-auto mb-1 h-4 w-4" /> : null}
+                  {nextMode === "edit" ? <Edit3 className="mx-auto mb-1 h-4 w-4" /> : null}
+                  {nextMode}
+                </button>
+              ))}
+            </div>
+            {teacherNotice ? (
+              <div className="mt-3 border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                {teacherNotice}
+              </div>
+            ) : null}
           </div>
 
-          <div className="flex-1 overflow-y-auto p-4 bg-[#fafafa]">
-            {activeTab === "info" && (
-              <div className="space-y-6">
-                
-                {/* Current Task */}
-                <div className="border-2 border-[#11110f] bg-white p-4 relative shadow-[4px_4px_0_#ccff00]">
-                  <h3 className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#11110f]">
-                    <Code className="h-4 w-4 text-[#ccff00]" />
-                    Current Task
-                  </h3>
-                  <p className="text-sm font-bold text-[#11110f]">
-                    {sessionData.task || "Free coding"}
-                  </p>
-                  <p className="mt-2 text-xs font-medium text-gray-500 italic bg-gray-50 border border-gray-200 p-2">
-                    Objective: coach toward a correct solution without taking over the full task.
-                  </p>
+          <div className="flex-1 overflow-y-auto bg-[#fafafa] p-4">
+            <div className="space-y-5">
+              <div className="border-2 border-[#11110f] bg-white p-4 shadow-[4px_4px_0_#ccff00]">
+                <div className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                  <Code className="h-4 w-4" />
+                  Current Task
                 </div>
-
-                {/* Dashboard Stats */}
-                {sessionData.stats && (
-                  <div className="space-y-3">
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-[#11110f] flex items-center gap-2">
-                       <Info className="h-3 w-3" />
-                       Student Profile
-                    </h3>
-                    <div className="border border-gray-300 bg-white grid grid-cols-2 divide-x divide-[#11110f] border-2 border-[#11110f]">
-                      <div className="p-3">
-                         <div className="text-[10px] uppercase tracking-wider font-bold text-gray-500 mb-1">Success</div>
-                         <div className={`text-xl font-black ${sessionData.stats.successRate >= 80 ? "text-green-600" : "text-orange-600"}`}>
-                           {sessionData.stats.successRate}%
-                         </div>
-                      </div>
-                      <div className="p-3">
-                         <div className="text-[10px] uppercase tracking-wider font-bold text-gray-500 mb-1">Strength</div>
-                         <div className="text-sm font-bold text-green-600 pr-1 leading-snug truncate">
-                           {sessionData.stats.strength}
-                         </div>
-                      </div>
-                    </div>
-                    <div className="border-2 border-[#11110f] bg-white p-3 shadow-[4px_4px_0_rgba(244,63,94,0.3)]">
-                       <div className="text-[10px] uppercase tracking-wider font-bold text-gray-500 mb-1">Struggling With</div>
-                       <div className="text-sm font-bold text-rose-600">
-                         {sessionData.stats.weakness}
-                       </div>
-                    </div>
-                  </div>
-                )}
-                
-                {/* Live Activity Feed (Mock) */}
-                <div className="space-y-3">
-                   <h3 className="text-xs font-bold uppercase tracking-wider text-[#11110f] flex items-center gap-2">
-                      <Terminal className="h-3 w-3" />
-                      Live Feed
-                   </h3>
-                   <div className="border-2 border-[#11110f] bg-[#11110f] text-white p-3 font-mono text-xs">
-                     <div className="flex items-center gap-2 text-[#ccff00] mb-2">
-                        <AlertTriangle className="h-3.5 w-3.5" />
-                        <span>SyntaxError: invalid syntax</span>
-                     </div>
-                     <div className="text-gray-400 mb-3 ml-5">line 14, in solve()</div>
-                     <div className="border-t border-gray-700 pt-2 flex items-center justify-between">
-                       <span className="text-gray-400">Status</span>
-                       <span className="text-[#00ffff] animate-pulse">Typing...</span>
-                     </div>
-                   </div>
+                <div className="text-sm font-bold text-[#11110f]">
+                  {currentTask?.title ?? "No task selected"}
                 </div>
-
-                {/* AI Commands */}
-                <div className="space-y-3">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-[#11110f] flex items-center gap-2">
-                     <Zap className="h-3 w-3 text-[#ccff00]" />
-                     AI Actions
-                  </h3>
-                  
-                  <button className="w-full flex items-center gap-3 border-2 border-[#11110f] bg-white p-2 text-left transition hover:bg-[#ccff00] group relative z-10 hover:-translate-y-0.5 hover:shadow-[4px_4px_0_#11110f]">
-                    <div className="bg-[#11110f] text-[#ccff00] p-2 border-2 border-[#11110f] group-hover:bg-white group-hover:text-[#11110f] transition-colors">
-                      <Lightbulb className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-bold uppercase tracking-tight">Send Hint</div>
-                      <div className="text-[10px] text-gray-500 tracking-wide font-medium leading-tight">Small directional suggestion</div>
-                    </div>
-                  </button>
-                  
-                  <button className="w-full flex items-center gap-3 border-2 border-[#11110f] bg-white p-2 text-left transition hover:bg-[#ccff00] group relative z-10 hover:-translate-y-0.5 hover:shadow-[4px_4px_0_#11110f]">
-                    <div className="bg-[#11110f] text-[#ccff00] p-2 border-2 border-[#11110f] group-hover:bg-white group-hover:text-[#11110f] transition-colors">
-                      <AlertTriangle className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-bold uppercase tracking-tight">Highlight Issue</div>
-                      <div className="text-[10px] text-gray-500 tracking-wide font-medium leading-tight">Flags problematic lines</div>
-                    </div>
-                  </button>
-                  
-                  <button className="w-full flex items-center gap-3 border-2 border-[#11110f] bg-white p-2 text-left transition hover:bg-[#ccff00] group relative z-10 hover:-translate-y-0.5 hover:shadow-[4px_4px_0_#11110f]">
-                    <div className="bg-[#11110f] text-[#ccff00] p-2 border-2 border-[#11110f] group-hover:bg-white group-hover:text-[#11110f] transition-colors">
-                      <Edit3 className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-bold uppercase tracking-tight">Insert TODO</div>
-                      <div className="text-[10px] text-gray-500 tracking-wide font-medium leading-tight">Adds # TODO note inline</div>
-                    </div>
-                  </button>
-                  
-                  <button className="w-full flex items-center gap-3 border-2 border-[#11110f] bg-white p-2 text-left transition hover:bg-[#ccff00] group relative z-10 hover:-translate-y-0.5 hover:shadow-[4px_4px_0_#11110f]">
-                    <div className="bg-[#11110f] text-[#ccff00] p-2 border-2 border-[#11110f] group-hover:bg-white group-hover:text-[#11110f] transition-colors">
-                      <RotateCcw className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-bold uppercase tracking-tight">Reset Code</div>
-                      <div className="text-[10px] text-gray-500 tracking-wide font- medium leading-tight">Revert to base template</div>
-                    </div>
-                  </button>
-
-                  <button className="w-full flex items-center gap-3 border-2 border-[#11110f] bg-white p-2 text-left transition hover:bg-black hover:text-white group relative z-10 hover:-translate-y-0.5 hover:shadow-[4px_4px_0_#ccff00]">
-                    <div className="bg-[#ccff00] text-[#11110f] p-2 border-2 border-[#11110f] group-hover:bg-[#ccff00] transition-colors">
-                      <CheckCircle className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="text-sm font-bold uppercase tracking-tight">Mark Complete</div>
-                      <div className="text-[10px] text-gray-400 group-hover:text-gray-300 tracking-wide font-medium leading-tight">Override completion status</div>
-                    </div>
-                  </button>
-
+                <div className="mt-2 text-xs font-medium text-gray-500">
+                  {currentTask?.description ?? "Teacher focus mode is attached to the student's current workspace."}
                 </div>
               </div>
-            )}
 
-            {activeTab === "chat" && (
-              <div className="flex h-full flex-col">
-                <div className="mb-4 flex-1 space-y-4">
+              <div className="border-2 border-[#11110f] bg-white p-4">
+                <div className="mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                  Add Feedback
+                </div>
+                <textarea
+                  id="teacher-feedback-comment"
+                  name="teacherFeedbackComment"
+                  aria-label="Teacher feedback comment"
+                  value={commentText}
+                  onChange={(event) => setCommentText(event.target.value)}
+                  placeholder="Add a comment or explain what the student should focus on..."
+                  className="min-h-24 w-full resize-none border-2 border-[#11110f] bg-[#fafafa] px-3 py-3 text-sm font-medium text-[#11110f] focus:outline-none focus:ring-2 focus:ring-[#ccff00]"
+                />
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={isSavingAction || !commentText.trim()}
+                    onClick={() =>
+                      void pushIntervention("comment", { content: commentText.trim(), mode: "view" })
+                    }
+                    className="border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                  >
+                    Add Comment
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSavingAction || !commentText.trim()}
+                    onClick={() =>
+                      void pushIntervention("highlight", {
+                        content: commentText.trim(),
+                        mode: "suggest",
+                      })
+                    }
+                    className="border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                  >
+                    Highlight
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-2 border-[#11110f] bg-white p-4">
+                <div className="mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                  Suggestion Block
+                </div>
+                <textarea
+                  id="teacher-suggested-code"
+                  name="teacherSuggestedCode"
+                  aria-label="Teacher suggested code"
+                  value={suggestedCode}
+                  onChange={(event) => setSuggestedCode(event.target.value)}
+                  placeholder="Paste a suggested code replacement or leave blank to snapshot the current view."
+                  className="min-h-28 w-full resize-none border-2 border-[#11110f] bg-[#fafafa] px-3 py-3 text-sm font-medium text-[#11110f] focus:outline-none focus:ring-2 focus:ring-[#ccff00]"
+                />
+                <button
+                  type="button"
+                  disabled={isSavingAction || mode === "edit"}
+                  onClick={() =>
+                    void pushIntervention("suggestion", {
+                      content: commentText.trim() || "Teacher suggested a code change.",
+                      suggestedCode: suggestedCode.trim() || editorRef.current?.getCode(),
+                      mode: "suggest",
+                    })
+                  }
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-[#11110f] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#ccff00]"
+                >
+                  <Wand2 className="h-4 w-4" />
+                  Create Suggestion
+                </button>
+              </div>
+
+              <div className="border-2 border-[#11110f] bg-white p-4">
+                <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                  Direct Actions
+                </div>
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    disabled={mode !== "edit" || isSavingAction}
+                    onClick={() => void handleCommitTeacherEdit()}
+                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <CheckCircle className="h-4 w-4" />
+                    Commit Teacher Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onResolveHelp();
+                      broadcastSessionEvent({
+                        type: "help-resolved",
+                        studentId: student.studentId,
+                        resolvedAt: new Date().toISOString(),
+                      });
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                  >
+                    <CheckCircle className="h-4 w-4" />
+                    Mark Help Resolved
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onResetCode();
+                      if (currentTask?.initialCode) {
+                        editorRef.current?.replaceCode(currentTask.initialCode);
+                      }
+                      editorRef.current?.notifyInterventionsChanged();
+                    }}
+                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-rose-600"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Reset to Starter
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-2 border-[#11110f] bg-white p-4">
+                <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                  Teacher Notes
+                </div>
+                <div className="space-y-3">
                   {messages.map((message, index) => (
-                    <div
-                      key={`${message.sender}-${index}`}
-                      className={`flex flex-col ${
-                        message.sender === "You" ? "items-end" : "items-start"
-                      }`}
-                    >
-                      <div
-                        className={`max-w-[85%] border-2 border-[#11110f] p-3 text-sm font-medium ${
-                          message.sender === "You"
-                            ? "bg-[#ccff00] text-[#11110f]"
-                            : "bg-white text-[#11110f]"
-                        }`}
-                      >
-                        {message.text}
+                    <div key={`${message.sender}-${index}`} className="border-2 border-[#11110f] bg-[#fafafa] p-3">
+                      <div className="mb-1 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                        {message.sender}
                       </div>
-                      <span className="mt-1 px-1 text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-                        {message.sender === "You"
-                          ? message.time
-                          : `${message.sender} • ${message.time}`}
-                      </span>
+                      <div className="text-sm font-medium text-[#11110f]">{message.text}</div>
+                      <div className="mt-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                        {message.time}
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
-            )}
+            </div>
           </div>
 
-          {activeTab === "chat" && (
-            <div className="border-t-2 border-[#11110f] bg-white p-4 bg-gray-50">
-              <form onSubmit={handleSendMessage} className="relative">
-                <input
-                  type="text"
-                  value={newMessage}
-                  onChange={(event) => setNewMessage(event.target.value)}
-                  placeholder="Type a message..."
-                  className="w-full rounded-none border-2 border-[#11110f] bg-white py-3 pl-4 pr-12 text-sm font-bold text-[#11110f] focus:outline-none focus:ring-0 shadow-[4px_4px_0_#11110f] transition-all focus:translate-y-[2px] focus:translate-x-[2px] focus:shadow-[2px_2px_0_#11110f] placeholder:text-gray-400 placeholder:font-medium"
-                />
-                <button
-                  type="submit"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-none bg-[#11110f] p-2 text-[#ccff00] transition hover:bg-gray-800"
-                >
-                  <Send className="h-4 w-4" />
-                </button>
-              </form>
-            </div>
-          )}
+          <div className="border-t-2 border-[#11110f] bg-white p-4">
+            <form onSubmit={handleSendMessage} className="relative">
+              <input
+                id="teacher-note-input"
+                name="teacherNote"
+                aria-label="Teacher note"
+                type="text"
+                value={newMessage}
+                onChange={(event) => setNewMessage(event.target.value)}
+                placeholder="Leave a short note..."
+                className="w-full rounded-none border-2 border-[#11110f] bg-white py-3 pl-4 pr-12 text-sm font-bold text-[#11110f] shadow-[4px_4px_0_#11110f] transition-all placeholder:text-gray-400 focus:outline-none"
+              />
+              <button
+                type="submit"
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-none bg-[#11110f] p-2 text-[#ccff00] transition hover:bg-gray-800"
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </form>
+          </div>
         </aside>
       </div>
     </div>

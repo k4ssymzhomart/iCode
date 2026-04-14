@@ -1,6 +1,6 @@
 import type { CompilerHistoryEntry } from "@shared/compiler";
 
-const storageKey = "icode.smart-compiler.v3";
+const storageKey = (userId?: string) => `icode.smart-compiler.v3.${userId || 'guest'}`;
 
 type StoredDraft = {
   code: string;
@@ -20,13 +20,13 @@ const createDefaultState = (): CompilerWorkspaceState => ({
 
 const canUseStorage = () => typeof window !== "undefined";
 
-const readState = (): CompilerWorkspaceState => {
+const readState = (userId?: string): CompilerWorkspaceState => {
   if (!canUseStorage()) {
     return createDefaultState();
   }
 
   try {
-    const raw = window.localStorage.getItem(storageKey);
+    const raw = window.localStorage.getItem(storageKey(userId));
     if (!raw) {
       return createDefaultState();
     }
@@ -42,45 +42,45 @@ const readState = (): CompilerWorkspaceState => {
   }
 };
 
-const writeState = (state: CompilerWorkspaceState) => {
+const writeState = (state: CompilerWorkspaceState, userId?: string) => {
   if (!canUseStorage()) {
     return;
   }
 
-  window.localStorage.setItem(storageKey, JSON.stringify(state));
+  window.localStorage.setItem(storageKey(userId), JSON.stringify(state));
 };
 
-const withState = <T>(updater: (state: CompilerWorkspaceState) => T) => {
-  const state = readState();
+const withState = <T>(updater: (state: CompilerWorkspaceState) => T, userId?: string) => {
+  const state = readState(userId);
   const result = updater(state);
-  writeState(state);
+  writeState(state, userId);
   return result;
 };
 
-export const loadCompilerDraft = () => readState().draft;
+export const loadCompilerDraft = (userId?: string) => readState(userId).draft;
 
-export const saveCompilerDraft = (code: string) =>
+export const saveCompilerDraft = (code: string, userId?: string) =>
   withState((state) => {
     const updatedAt = new Date().toISOString();
     state.draft = { code, updatedAt };
     return updatedAt;
-  });
+  }, userId);
 
-export const clearCompilerDraft = () =>
+export const clearCompilerDraft = (userId?: string) =>
   withState((state) => {
     delete state.draft;
-  });
+  }, userId);
 
-export const loadCompilerStdin = () => readState().stdin;
+export const loadCompilerStdin = (userId?: string) => readState(userId).stdin;
 
-export const saveCompilerStdin = (stdin: string) =>
+export const saveCompilerStdin = (stdin: string, userId?: string) =>
   withState((state) => {
     state.stdin = stdin;
-  });
+  }, userId);
 
-export const loadCompilerHistory = () => readState().history;
+export const loadCompilerHistory = (userId?: string) => readState(userId).history;
 
-export const appendCompilerHistory = (entry: CompilerHistoryEntry) =>
+export const appendCompilerHistory = (entry: CompilerHistoryEntry, userId?: string) =>
   withState((state) => {
     state.history = [entry, ...state.history].slice(0, 16);
-  });
+  }, userId);

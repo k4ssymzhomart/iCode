@@ -1,16 +1,18 @@
 import React from "react";
 import { AlertCircle, WifiOff, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import fullLogo from "@/assets/full_logo.png";
 
 /**
- * Centered Loading State matching brutalist aesthetic
+ * Centered Loading State matching brutalist aesthetic (same as teacher/auth loader)
  */
 export const LoadingState = ({ message = "Loading..." }: { message?: string }) => (
   <div className="flex h-screen w-full flex-col items-center justify-center bg-white">
-    <div className="flex flex-col items-center gap-4">
-      <Loader2 className="size-10 animate-spin text-[#11110f]" />
-      <div className="font-['Outfit'] text-sm font-semibold uppercase tracking-widest text-[#11110f]">
-        {message}
+    <div className="flex flex-col items-center gap-8 animate-in fade-in zoom-in duration-300">
+      <img src={fullLogo} alt="iCode" className="h-14 w-auto drop-shadow-md" />
+      <div className="inline-flex items-center gap-3 border-[3px] border-[#11110f] bg-[#ccff00] px-6 py-3 font-mono text-sm font-black uppercase tracking-widest text-[#11110f] shadow-[6px_6px_0_#11110f]">
+        <span>{message}</span>
+        <span className="h-5 w-2.5 animate-pulse bg-[#11110f]" style={{ animationDuration: '0.4s' }} />
       </div>
     </div>
   </div>

@@ -1,25 +1,61 @@
 import React, { useState, useEffect } from "react";
 import { Play, Pause, StopCircle, RefreshCw, Hash, Users, AlertCircle, Clock, Activity } from "lucide-react";
+import type { TeacherSession } from "@shared/types";
 
 interface TopStripProps {
   sessionCode: string;
   topic: string;
+  sessionState: TeacherSession["state"];
+  startTime?: string;
+  tasks?: Array<{ taskId: string; task: { title: string } }>;
+  activeTaskId?: string;
   totalStudents: number;
   activeCount: number;
   stuckCount: number;
   helpCount: number;
   avgTime: string;
+  onStateChange?: (state: TeacherSession["state"]) => void;
+  onRegenerateCode?: () => void;
+  onActiveTaskChange?: (taskId: string) => void;
+  onBroadcastMessage?: () => void;
+  onPinHint?: () => void;
 }
 
-const TopStrip: React.FC<TopStripProps> = ({ sessionCode, topic, totalStudents, activeCount, stuckCount, helpCount, avgTime }) => {
-  const [sessionState, setSessionState] = useState<"live" | "paused" | "ended">("live");
+const TopStrip: React.FC<TopStripProps> = ({
+  sessionCode,
+  topic: initialTopic,
+  sessionState,
+  startTime,
+  tasks,
+  activeTaskId,
+  totalStudents,
+  activeCount,
+  stuckCount,
+  helpCount,
+  avgTime,
+  onStateChange,
+  onRegenerateCode,
+  onActiveTaskChange,
+  onBroadcastMessage,
+  onPinHint,
+}) => {
   const [elapsed, setElapsed] = useState(0);
+  const [topic, setTopic] = useState(initialTopic);
+  const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
-    if (sessionState !== "live") return;
-    const timer = setInterval(() => setElapsed((prev) => prev + 1), 1000);
+    if (!startTime || sessionState !== "live") return;
+    const sync = () => {
+      const nextElapsed = Math.max(
+        0,
+        Math.floor((Date.now() - new Date(startTime).getTime()) / 1000),
+      );
+      setElapsed(nextElapsed);
+    };
+    sync();
+    const timer = setInterval(sync, 1000);
     return () => clearInterval(timer);
-  }, [sessionState]);
+  }, [sessionState, startTime]);
 
   const mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
   const secs = (elapsed % 60).toString().padStart(2, '0');
@@ -29,8 +65,26 @@ const TopStrip: React.FC<TopStripProps> = ({ sessionCode, topic, totalStudents, 
       
       {/* Session Info & Controls */}
       <div className="flex md:w-1/3 border-b-2 md:border-b-0 md:border-r-2 border-[#11110f]">
-         <div className="p-4 flex flex-col justify-center flex-1">
-            <h1 className="text-xl font-black uppercase tracking-tight text-[#11110f] truncate">{topic}</h1>
+         <div className="p-4 flex flex-col justify-center flex-1 min-w-0">
+            {isEditing ? (
+              <input
+                type="text"
+                value={topic}
+                onChange={(e) => setTopic(e.target.value)}
+                onBlur={() => setIsEditing(false)}
+                onKeyDown={(e) => e.key === 'Enter' && setIsEditing(false)}
+                autoFocus
+                className="text-xl font-black uppercase tracking-tight text-[#11110f] bg-transparent border-b-2 border-[#11110f] focus:outline-none w-full"
+              />
+            ) : (
+              <h1 
+                onDoubleClick={() => setIsEditing(true)} 
+                className="text-xl font-black uppercase tracking-tight text-[#11110f] truncate cursor-pointer select-none hover:text-gray-600 transition-colors" 
+                title="Double-click to edit topic"
+              >
+                {topic}
+              </h1>
+            )}
             <div className="flex items-center gap-3 mt-1">
                <span className="flex items-center gap-1 text-xs font-bold bg-[#ccff00] text-[#11110f] px-2 py-0.5 border border-[#11110f]">
                  <Hash className="w-3 h-3" /> {sessionCode}
@@ -45,15 +99,46 @@ const TopStrip: React.FC<TopStripProps> = ({ sessionCode, topic, totalStudents, 
                  {sessionState}
                </span>
             </div>
+            {tasks && tasks.length > 0 ? (
+              <div className="mt-3 space-y-2">
+                <select
+                  value={activeTaskId}
+                  onChange={(event) => onActiveTaskChange?.(event.target.value)}
+                  className="w-full border-2 border-[#11110f] bg-[#fafafa] px-3 py-2 text-xs font-black uppercase tracking-[0.2em] text-[#11110f] focus:outline-none focus:ring-2 focus:ring-[#ccff00]"
+                >
+                  {tasks.map((task) => (
+                    <option key={task.taskId} value={task.taskId}>
+                      {task.task.title}
+                    </option>
+                  ))}
+                </select>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={onBroadcastMessage}
+                    className="border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                  >
+                    Broadcast
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onPinHint}
+                    className="border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                  >
+                    Pin Hint
+                  </button>
+                </div>
+              </div>
+            ) : null}
          </div>
          <div className="flex flex-col border-l-2 border-[#11110f] shrink-0 w-16">
-            <button onClick={() => setSessionState("live")} disabled={sessionState === "live"} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'live' ? 'bg-[#ccff00]' : 'bg-white hover:bg-gray-50'} transition-colors`}>
+            <button onClick={() => onStateChange?.("live")} disabled={sessionState === "live"} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'live' ? 'bg-[#ccff00]' : 'bg-white hover:bg-gray-50'} transition-colors`}>
                <Play className="w-5 h-5 fill-[#11110f]" />
             </button>
-            <button onClick={() => setSessionState("paused")} disabled={sessionState === "ended"} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'paused' ? 'bg-orange-200' : 'bg-white hover:bg-gray-50'} transition-colors`}>
+            <button onClick={() => onStateChange?.("paused")} disabled={sessionState === "completed"} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'paused' ? 'bg-orange-200' : 'bg-white hover:bg-gray-50'} transition-colors`}>
                <Pause className="w-5 h-5 fill-[#11110f]" />
             </button>
-            <button onClick={() => setSessionState("ended")} className={`flex-1 flex justify-center items-center ${sessionState === 'ended' ? 'bg-rose-200' : 'bg-white hover:bg-gray-50'} transition-colors`}>
+            <button onClick={() => onStateChange?.("completed")} className={`flex-1 flex justify-center items-center ${sessionState === 'completed' ? 'bg-rose-200' : 'bg-white hover:bg-gray-50'} transition-colors`}>
                <StopCircle className="w-5 h-5 text-rose-600" />
             </button>
          </div>
@@ -75,7 +160,16 @@ const TopStrip: React.FC<TopStripProps> = ({ sessionCode, topic, totalStudents, 
          </div>
          <div className="p-3 flex flex-col justify-center bg-[#ccff00]">
             <span className="text-[10px] font-bold text-[#11110f] uppercase tracking-widest flex items-center gap-1"><RefreshCw className="w-3 h-3" /> Avg Time</span>
-            <span className="text-xl font-black text-[#11110f] font-mono">{avgTime}</span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xl font-black text-[#11110f] font-mono">{avgTime}</span>
+              <button
+                type="button"
+                onClick={onRegenerateCode}
+                className="border-2 border-[#11110f] bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+              >
+                New Code
+              </button>
+            </div>
          </div>
       </div>
 

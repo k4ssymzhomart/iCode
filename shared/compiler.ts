@@ -1,9 +1,23 @@
-export type CompilerAction = "run" | "correct";
+import type { Task } from "./types";
+
+export type CompilerAction = "run" | "correct" | "explain";
+export type CompilerFixMode = "full" | "last-console-error";
+
+export interface CompilerResponseSection {
+  title: string;
+  content: string;
+  kind?: "task" | "code" | "log";
+}
 
 export interface CompilerActionRequest {
   sourceCode: string;
   stdin?: string;
-  taskId?: string; // Included for backend metric tracking
+  fixMode?: CompilerFixMode;
+  consoleOutput?: string;
+  sessionId?: string;
+  taskId?: string;
+  language?: Task["language"];
+  outputLog?: string;
 }
 
 export interface CompilerActionResponse {
@@ -11,6 +25,8 @@ export interface CompilerActionResponse {
   statusLabel: string;
   content: string;
   correctedCode?: string;
+  fixMode?: CompilerFixMode;
+  sections?: CompilerResponseSection[];
 }
 
 export interface CompilerHistoryEntry {

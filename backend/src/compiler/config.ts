@@ -1,5 +1,5 @@
 export const getCompilerConfig = () => ({
-  rapidApiKey: process.env.RAPIDAPI_KEY ?? "",
+  rapidApiKey: process.env.RAPIDAPI_KEY ?? "9a0f172768mshc46725afc0019dfp172bddjsn73455f16dc83",
   rapidApiHost: process.env.RAPIDAPI_HOST ?? "gpt-5-4-mini.p.rapidapi.com",
   rapidApiUrl:
     process.env.RAPIDAPI_AI_URL ??

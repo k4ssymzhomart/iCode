@@ -7,11 +7,11 @@ import { authService } from "@/services/auth";
 import { UserRole } from "../../../shared/types";
 import { useAuth } from "@/lib/auth-context";
 
-const getAuthErrorMessage = (error: unknown) => {
+const getAuthErrorMessage = (error: unknown, defaultMessage = "Sign-in could not be completed. Please try again.") => {
   if (error instanceof Error) {
     return error.message;
   }
-  return "Google sign-in could not be completed. Please try again.";
+  return defaultMessage;
 };
 
 const LoginPage = () => {
@@ -66,12 +66,41 @@ const LoginPage = () => {
     );
   };
 
+  const handleEmailSignIn = async (email: string, password: string) => {
+    try {
+      setIsGoogleLoading(true);
+      setErrorMessage(null);
+      setStatusMessage("Signing in...");
+      await authService.signInWithEmail(email, password, role);
+    } catch (error) {
+      setStatusMessage(null);
+      setIsGoogleLoading(false);
+      setErrorMessage(getAuthErrorMessage(error, "Email sign-in failed."));
+    }
+  };
+
+  const handleEmailSignUp = async (email: string, password: string) => {
+    try {
+      setIsGoogleLoading(true);
+      setErrorMessage(null);
+      setStatusMessage("Creating account...");
+      await authService.signUpWithEmail(email, password, role);
+      setStatusMessage("Account created! You are now signed in.");
+    } catch (error) {
+      setStatusMessage(null);
+      setIsGoogleLoading(false);
+      setErrorMessage(getAuthErrorMessage(error, "Failed to create account."));
+    }
+  };
+
   return (
     <MinimalAuthPage
       role={role as "student" | "teacher"}
       onRoleChange={(r) => setRole(r)}
       onGoogleContinue={handleGoogleContinue}
       onGithubContinue={handleGithubContinue}
+      onEmailSignIn={handleEmailSignIn}
+      onEmailSignUp={handleEmailSignUp}
       isGoogleLoading={isGoogleLoading || isLoading}
       statusMessage={statusMessage}
       errorMessage={errorMessage}

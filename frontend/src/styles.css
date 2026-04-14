@@ -129,3 +129,29 @@ button {
   text-transform: uppercase;
   color: #6d695f;
 }
+
+.icode-intervention-comment {
+  background: rgba(17, 17, 15, 0.08);
+  border-left: 3px solid #11110f;
+}
+
+.icode-intervention-highlight {
+  background: rgba(204, 255, 0, 0.28);
+  border-left: 3px solid #8fa800;
+}
+
+.icode-intervention-suggestion {
+  background: rgba(56, 189, 248, 0.16);
+  border-left: 3px solid #0284c7;
+}
+
+.icode-intervention-direct-edit {
+  background: rgba(244, 63, 94, 0.12);
+  border-left: 3px solid #e11d48;
+}
+
+.icode-intervention-glyph {
+  background: #11110f;
+  border-radius: 2px;
+  margin-left: 4px;
+}

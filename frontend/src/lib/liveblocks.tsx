@@ -1,35 +1,132 @@
 import { createClient } from "@liveblocks/client";
 import {
-  ClientSideSuspense as RealClientSideSuspense,
+  ClientSideSuspense,
   createRoomContext,
 } from "@liveblocks/react";
-import React, { createContext, useContext, useEffect, useState } from "react";
+import type {
+  HelpStatus,
+  SessionStudentStatus,
+  TeacherInterventionMode,
+} from "@shared/types";
 import { supabase } from "./supabase";
 
-const useMockMode = false;
-
-type Presence = {
-  cursor: { x: number; y: number } | null;
-  selection: { start: number; end: number } | null;
+export type SessionRoomPresence = {
+  currentTaskId: string | null;
+  status: SessionStudentStatus | null;
+  workspaceStudentId: string | null;
+  mode: TeacherInterventionMode | null;
 };
 
-type Storage = {
+export type LiveblocksEditorRange = {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+};
+
+export type SessionRoomStorage = {
+  activeTaskId: string | null;
+  broadcastMessage: string | null;
+  pinnedHint: string | null;
+  snippets: Record<string, string>;
+  studentStatuses: Record<string, SessionStudentStatus>;
+  helpStatuses: Record<string, HelpStatus>;
+};
+
+export type SessionRoomEvent =
+  | {
+      type: "student-activity";
+      studentId: string;
+      currentTaskId?: string;
+      status?: SessionStudentStatus;
+      snippet?: string;
+      helpStatus?: HelpStatus;
+      helpRequestedAt?: string | null;
+    }
+  | {
+      type: "help-requested";
+      studentId: string;
+      taskId?: string;
+      requestedAt: string;
+    }
+  | {
+      type: "help-resolved";
+      studentId: string;
+      resolvedAt: string;
+    }
+  | {
+      type: "broadcast-message";
+      message: string | null;
+    }
+  | {
+      type: "pinned-hint";
+      hint: string | null;
+    }
+  | {
+      type: "active-task";
+      taskId: string;
+    }
+  | {
+      type: "teacher-focus";
+      studentId: string;
+      taskId: string;
+      mode: TeacherInterventionMode;
+    };
+
+export type EditorRoomPresence = {
+  cursor: { lineNumber: number; column: number } | null;
+  selection: LiveblocksEditorRange | null;
+  mode: TeacherInterventionMode | null;
+  workspaceStudentId: string | null;
+};
+
+export type EditorRoomStorage = {
   code: string;
+  revision: number;
+  teacherJoinedMessage: string | null;
 };
+
+export type EditorRoomEvent =
+  | {
+      type: "teacher-joined";
+      teacherName: string;
+      mode: TeacherInterventionMode;
+    }
+  | {
+      type: "teacher-mode";
+      mode: TeacherInterventionMode;
+    }
+  | {
+      type: "interventions-updated";
+    }
+  | {
+      type: "code-saved";
+      revision: number;
+    };
 
 type UserMeta = {
   id: string;
   info: {
     name: string;
-    role: "teacher" | "student";
+    role: "teacher" | "student" | "admin";
     avatar?: string;
   };
 };
 
+export const buildSessionRoomId = (sessionId: string) => `session:${encodeURIComponent(sessionId)}`;
+export const buildEditorRoomId = (
+  sessionId: string,
+  workspaceStudentId: string,
+  taskId: string,
+) =>
+  `editor:${encodeURIComponent(sessionId)}:${encodeURIComponent(workspaceStudentId)}:${encodeURIComponent(taskId)}`;
+
 const client = createClient({
   authEndpoint: async (room) => {
-    const { data: { session } } = await supabase.auth.getSession();
-    
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
     if (!session) {
       throw new Error("Authentication required to join the room.");
     }
@@ -38,134 +135,59 @@ const client = createClient({
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${session.access_token}`
+        Authorization: `Bearer ${session.access_token}`,
       },
       body: JSON.stringify({ room }),
     });
-    
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      throw new Error(errorBody.error || `Liveblocks auth failed (${response.status})`);
+    }
+
     return await response.json();
   },
 });
 
-const {
-  RoomProvider: RealRoomProvider,
-  useOthers: useRealOthers,
-  useStorage: useRealStorage,
-  useMutation: useRealMutation,
-  useMyPresence: useRealMyPresence,
-} = createRoomContext<Presence, Storage, UserMeta>(client);
+const sessionContext = createRoomContext<
+  SessionRoomPresence,
+  SessionRoomStorage,
+  UserMeta,
+  SessionRoomEvent
+>(client);
 
-const MockContext = createContext<{ roomId: string } | null>(null);
-const mockStorage: Record<string, Storage> = {};
-const listeners: Record<string, Set<() => void>> = {};
+const editorContext = createRoomContext<
+  EditorRoomPresence,
+  EditorRoomStorage,
+  UserMeta,
+  EditorRoomEvent
+>(client);
 
-const triggerUpdate = (roomId: string) => {
-  listeners[roomId]?.forEach((listener) => listener());
-};
+export const SessionRoomProvider = sessionContext.RoomProvider;
+export const useSessionRoom = sessionContext.useRoom;
+export const useSessionOthers = sessionContext.useOthers;
+export const useSessionStorage = sessionContext.useStorage;
+export const useSessionMutation = sessionContext.useMutation;
+export const useSessionMyPresence = sessionContext.useMyPresence;
+export const useSessionBroadcastEvent = sessionContext.useBroadcastEvent;
+export const useSessionEventListener = sessionContext.useEventListener;
+export const useSessionStatus = sessionContext.useStatus;
 
-const MockRoomProvider = ({
-  id,
-  initialStorage,
-  initialPresence: _initialPresence,
-  initialUserMeta: _initialUserMeta,
-  children,
-}: {
-  id: string;
-  initialStorage?: Storage;
-  initialPresence?: Presence;
-  initialUserMeta?: UserMeta;
-  children: React.ReactNode;
-}) => {
-  if (!mockStorage[id]) {
-    mockStorage[id] = initialStorage ?? { code: "" };
-  }
+export const EditorRoomProvider = editorContext.RoomProvider;
+export const useEditorRoom = editorContext.useRoom;
+export const useEditorOthers = editorContext.useOthers;
+export const useEditorStorage = editorContext.useStorage;
+export const useEditorMutation = editorContext.useMutation;
+export const useEditorMyPresence = editorContext.useMyPresence;
+export const useEditorBroadcastEvent = editorContext.useBroadcastEvent;
+export const useEditorEventListener = editorContext.useEventListener;
+export const useEditorStatus = editorContext.useStatus;
 
-  return (
-    <MockContext.Provider value={{ roomId: id }}>{children}</MockContext.Provider>
-  );
-};
+// Backward-compatible aliases for the editor room hooks.
+export const RoomProvider = EditorRoomProvider;
+export const useOthers = useEditorOthers;
+export const useStorage = useEditorStorage;
+export const useMutation = useEditorMutation;
+export const useMyPresence = useEditorMyPresence;
 
-const useMockStorage = <T,>(selector: (root: Storage) => T) => {
-  const context = useContext(MockContext);
-  const roomId = context?.roomId ?? "default";
-  const [value, setValue] = useState(() =>
-    selector(mockStorage[roomId] ?? { code: "" }),
-  );
-
-  useEffect(() => {
-    const listener = () => setValue(selector(mockStorage[roomId] ?? { code: "" }));
-    listeners[roomId] = listeners[roomId] ?? new Set();
-    listeners[roomId].add(listener);
-    return () => {
-      listeners[roomId]?.delete(listener);
-    };
-  }, [roomId, selector]);
-
-  return value;
-};
-
-const useMockMutation = <TArgs extends unknown[]>(
-  callback: (
-    helpers: { storage: { set: (key: keyof Storage, value: string) => void } },
-    ...args: TArgs
-  ) => void,
-  _deps: unknown[],
-) => {
-  const context = useContext(MockContext);
-  const roomId = context?.roomId ?? "default";
-
-  return (...args: TArgs) => {
-    callback(
-      {
-        storage: {
-          set: (key, value) => {
-            mockStorage[roomId] = mockStorage[roomId] ?? { code: "" };
-            mockStorage[roomId][key] = value;
-            triggerUpdate(roomId);
-          },
-        },
-      },
-      ...args,
-    );
-  };
-};
-
-const useMockOthers = (): Array<{
-  info?: UserMeta["info"];
-  presence?: Presence;
-}> => [];
-
-const useMockMyPresence = (): readonly [
-  Presence,
-  (_presence: Partial<Presence>) => void,
-] => [{ cursor: null, selection: null }, () => undefined];
-
-const MockClientSideSuspense = ({
-  fallback,
-  children,
-}: {
-  fallback: React.ReactNode;
-  children: React.ReactNode | (() => React.ReactNode);
-}) => {
-  const [loaded, setLoaded] = useState(false);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setLoaded(true), 400);
-    return () => window.clearTimeout(timer);
-  }, []);
-
-  if (!loaded) {
-    return <>{fallback}</>;
-  }
-
-  return <>{typeof children === "function" ? children() : children}</>;
-};
-
-export const RoomProvider = useMockMode ? MockRoomProvider : RealRoomProvider;
-export const useOthers = useMockMode ? useMockOthers : useRealOthers;
-export const useStorage = useMockMode ? useMockStorage : useRealStorage;
-export const useMutation = useMockMode ? useMockMutation : useRealMutation;
-export const useMyPresence = useMockMode ? useMockMyPresence : useRealMyPresence;
-export const ClientSideSuspense = useMockMode
-  ? MockClientSideSuspense
-  : RealClientSideSuspense;
+export { ClientSideSuspense };

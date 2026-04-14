@@ -1,0 +1,35 @@
+{
+  "id": "python-basics-set-1",
+  "title": "Python Basics Set 1",
+  "topic": "Python Fundamentals",
+  "description": "Introductory classroom tasks for loops, conditionals, and functions.",
+  "language": "python",
+  "tasks": [
+    {
+      "id": "task-1",
+      "title": "Even or Odd",
+      "description": "Write a program that reads an integer and prints whether it is even or odd.",
+      "inputFormat": "A single integer n",
+      "outputFormat": "Print 'Even' if n is even, otherwise print 'Odd'",
+      "examples": [
+        {
+          "input": "4",
+          "output": "Even"
+        },
+        {
+          "input": "7",
+          "output": "Odd"
+        }
+      ],
+      "starterCode": "n = int(input())\n# write your code below\n",
+      "solutionSteps": [
+        "Read the integer input",
+        "Check if n % 2 == 0",
+        "Print Even if true, otherwise print Odd"
+      ],
+      "constraints": [
+        "-100000 <= n <= 100000"
+      ]
+    }
+  ]
+}

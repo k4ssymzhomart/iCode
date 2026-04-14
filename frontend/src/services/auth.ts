@@ -54,9 +54,6 @@ export const authService = {
     return data.subscription;
   },
 
-  /**
-   * Initiates Supabase Google OAuth
-   */
   async signInWithGoogle(role: UserRole) {
     localStorage.setItem("iCode_onboarding_role", role);
     
@@ -70,6 +67,27 @@ export const authService = {
     if (error) {
       throw error;
     }
+  },
+
+  async signInWithEmail(email: string, password: string,role: UserRole) {
+    localStorage.setItem("iCode_onboarding_role", role);
+    const { error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error) throw error;
+  },
+
+  async signUpWithEmail(email: string, password: string, role: UserRole) {
+    localStorage.setItem("iCode_onboarding_role", role);
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: { role },
+      }
+    });
+    if (error) throw error;
   },
 
   async signOut() {

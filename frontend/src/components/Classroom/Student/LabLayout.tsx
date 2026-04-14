@@ -3,8 +3,15 @@ import { Maximize2, Minimize2, Clock, Users, HelpCircle, Activity } from "lucide
 
 interface LabLayoutProps {
   sessionCode: string;
+  sessionTitle?: string;
+  sessionTopic?: string;
   nickname: string;
   avatarId: string;
+  classmatesCount: number;
+  helpState: "idle" | "requesting" | "requested" | "resolved";
+  onRequestHelp: () => void;
+  broadcastMessage?: string | null;
+  pinnedHint?: string | null;
   leftPanel: React.ReactNode;
   centerPanel: React.ReactNode;
   rightPanel: React.ReactNode;
@@ -13,8 +20,15 @@ interface LabLayoutProps {
 
 const LabLayout: React.FC<LabLayoutProps> = ({
   sessionCode,
+  sessionTitle,
+  sessionTopic,
   nickname,
   avatarId,
+  classmatesCount,
+  helpState,
+  onRequestHelp,
+  broadcastMessage,
+  pinnedHint,
   leftPanel,
   centerPanel,
   rightPanel,
@@ -38,21 +52,15 @@ const LabLayout: React.FC<LabLayoutProps> = ({
   }, []);
   const mins = Math.floor(elapsed / 60).toString().padStart(2, '0');
   const secs = (elapsed % 60).toString().padStart(2, '0');
-
-  // Help Request State
-  const [helpState, setHelpState] = useState<"idle" | "waiting" | "cooldown">("idle");
-  const handleRequestHelp = () => {
-    if (helpState !== "idle") return;
-    setHelpState("waiting");
-    
-    // Simulate teacher notification & cooldown
-    setTimeout(() => {
-      setHelpState("cooldown");
-      setTimeout(() => {
-        setHelpState("idle");
-      }, 30000); // 30s cooldown
-    }, 2000); // Simulate network request
-  };
+  const helpButtonDisabled = helpState === "requesting" || helpState === "requested";
+  const helpLabel =
+    helpState === "idle"
+      ? "Request Help"
+      : helpState === "requesting"
+        ? "Notifying..."
+        : helpState === "requested"
+          ? "Teacher Notified"
+          : "Request Again";
 
   return (
     <div className="flex h-screen flex-col bg-[#11110f] font-sans selection:bg-[#ccff00] selection:text-black overflow-hidden relative">
@@ -63,9 +71,16 @@ const LabLayout: React.FC<LabLayoutProps> = ({
           <div className="bg-[#ccff00] border-2 border-[#11110f] px-3 py-1 text-sm font-black text-[#11110f] uppercase tracking-widest shadow-[2px_2px_0_#11110f]">
             {sessionCode}
           </div>
-          <span className="text-sm font-bold uppercase tracking-wider text-[#11110f] hidden md:block">
-            Student Lab
-          </span>
+          <div className="hidden min-w-0 md:block">
+            <div className="truncate text-sm font-black uppercase tracking-wider text-[#11110f]">
+              {sessionTitle || "Student Lab"}
+            </div>
+            {sessionTopic ? (
+              <div className="truncate text-[10px] font-bold uppercase tracking-[0.2em] text-gray-500">
+                {sessionTopic}
+              </div>
+            ) : null}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
@@ -77,7 +92,7 @@ const LabLayout: React.FC<LabLayoutProps> = ({
              }`}
           >
             <Users className="h-4 w-4" />
-            Class ({4})
+            Class ({classmatesCount})
           </button>
           
           <div className="border-l-2 border-[#11110f] h-6 mx-2"></div>
@@ -92,16 +107,24 @@ const LabLayout: React.FC<LabLayoutProps> = ({
 
           {/* Request Help */}
           <button 
-            onClick={handleRequestHelp}
-            disabled={helpState !== "idle"}
+            onClick={onRequestHelp}
+            disabled={helpButtonDisabled}
             className={`flex items-center gap-2 px-3 py-1.5 border-2 text-xs font-bold uppercase tracking-wider transition-all ${
-              helpState === "idle" ? "bg-white border-[#11110f] text-rose-600 hover:bg-rose-50" : 
-              helpState === "waiting" ? "bg-yellow-300 border-[#11110f] text-[#11110f]" :
-              "bg-gray-100 border-gray-300 text-gray-400 cursor-not-allowed"
+              helpState === "idle"
+                ? "bg-white border-[#11110f] text-rose-600 hover:bg-rose-50"
+                : helpState === "requesting"
+                  ? "bg-yellow-300 border-[#11110f] text-[#11110f]"
+                  : helpState === "requested"
+                    ? "bg-[#11110f] border-[#11110f] text-[#ccff00]"
+                    : "bg-[#ccff00] border-[#11110f] text-[#11110f] hover:bg-[#bdf300]"
             }`}
           >
-            {helpState === "waiting" ? <Activity className="h-4 w-4 animate-spin text-[#11110f]" /> : <HelpCircle className="h-4 w-4" />}
-            {helpState === "idle" ? "Request Help" : helpState === "waiting" ? "Notifying..." : "Teacher Notified"}
+            {helpState === "requesting" ? (
+              <Activity className="h-4 w-4 animate-spin text-[#11110f]" />
+            ) : (
+              <HelpCircle className="h-4 w-4" />
+            )}
+            {helpLabel}
           </button>
 
           {/* Focus Mode Toggle */}
@@ -114,6 +137,21 @@ const LabLayout: React.FC<LabLayoutProps> = ({
           </button>
         </div>
       </div>
+
+      {(broadcastMessage || pinnedHint) && (
+        <div className="z-20 flex flex-wrap items-stretch gap-2 border-b-2 border-[#11110f] bg-[#fafafa] px-4 py-2">
+          {broadcastMessage ? (
+            <div className="border-2 border-[#11110f] bg-white px-3 py-2 text-xs font-bold uppercase tracking-wider text-[#11110f] shadow-[2px_2px_0_#11110f]">
+              Teacher Broadcast: {broadcastMessage}
+            </div>
+          ) : null}
+          {pinnedHint ? (
+            <div className="border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-xs font-bold uppercase tracking-wider text-[#11110f] shadow-[2px_2px_0_#11110f]">
+              Pinned Hint: {pinnedHint}
+            </div>
+          ) : null}
+        </div>
+      )}
 
       {/* Main Area */}
       <div className="flex-1 relative overflow-hidden flex flex-col md:flex-row bg-[#fafafa] p-2 gap-2">

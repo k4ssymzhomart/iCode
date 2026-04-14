@@ -3,36 +3,35 @@ export const appPaths = {
   login: "/login",
   compiler: "/smart-compiler",
   classroom: "/classroom",
+  feedback: "/feedback",
   teacher: "/teacher",
   teacherAnalytics: "/teacher/analytics",
   teacherMaterials: "/teacher/materials",
   teacherStudents: "/teacher/students",
   teacherSessions: "/teacher/sessions",
   teacherSettings: "/teacher/settings",
-  teacherSession: (roomId: string) =>
-    `/teacher/session/${encodeURIComponent(roomId)}`,
+  teacherSession: (sessionId: string, studentId: string, taskId: string) =>
+    `/teacher/session/${encodeURIComponent(sessionId)}/${encodeURIComponent(studentId)}/${encodeURIComponent(taskId)}`,
 } as const;
 
 export const preNavItems = [
   { label: "Home", href: appPaths.home },
-  { label: "Compiler", href: appPaths.compiler },
   { label: "Classroom", href: appPaths.classroom },
-  { label: "Teacher", href: appPaths.teacher },
-  { label: "404", href: "/this-is-not-found" },
+  { label: "Compiler", href: appPaths.compiler },
 ];
 
 export const studentNavItems = [
+  { label: "Home", href: appPaths.home },
+  { label: "Classroom", href: appPaths.classroom },
   { label: "Compiler", href: appPaths.compiler },
-  { label: "Lab Section", href: "/labs" },
-  { label: "Profile", href: "/profile" },
-  { label: "Secure Exam", href: "/exam" },
+  { label: "Feedback", href: appPaths.feedback },
 ];
 
 export const teacherNavItems = [
-  { label: "Tasks Rush", href: "/teacher/tasks" },
-  { label: "Classroom", href: appPaths.classroom },
-  { label: "Profile", href: "/teacher/profile" },
+  { label: "Active Lab", href: appPaths.teacher },
+  { label: "Sessions", href: appPaths.teacherSessions },
+  { label: "Students", href: appPaths.teacherStudents },
   { label: "Manage Classroom", href: appPaths.teacher },
-  { label: "Materials", href: "/teacher/materials" },
-  { label: "Compiler", href: "/teacher/compiler" },
+  { label: "Materials", href: appPaths.teacherMaterials },
+  { label: "Settings", href: appPaths.teacherSettings },
 ];

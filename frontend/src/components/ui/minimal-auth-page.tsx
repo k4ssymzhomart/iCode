@@ -9,6 +9,8 @@ import fullLogo from "@/assets/full_logo.png";
 type MinimalAuthPageProps = {
   onGoogleContinue?: () => void | Promise<void>;
   onGithubContinue?: () => void | Promise<void>;
+  onEmailSignIn?: (email: string, password: string) => void | Promise<void>;
+  onEmailSignUp?: (email: string, password: string) => void | Promise<void>;
   isGoogleLoading?: boolean;
   statusMessage?: string | null;
   errorMessage?: string | null;
@@ -19,12 +21,16 @@ type MinimalAuthPageProps = {
 export function MinimalAuthPage({
   onGoogleContinue,
   onGithubContinue,
+  onEmailSignIn,
+  onEmailSignUp,
   isGoogleLoading = false,
   statusMessage,
   errorMessage,
   role,
   onRoleChange,
 }: MinimalAuthPageProps) {
+  const [email, setEmail] = React.useState("admin@gmail.com");
+  const [password, setPassword] = React.useState("123123");
   const feedbackMessage = errorMessage ?? statusMessage;
 
   return (
@@ -93,26 +99,57 @@ export function MinimalAuthPage({
             </button>
           </div>
 
-          {/* Auth Buttons */}
-          <div className="space-y-3 pt-2">
-            <button
-              type="button"
-              onClick={onGoogleContinue}
-              disabled={isGoogleLoading}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-none border-[3px] border-[#11110f] bg-[#11110f] px-6 py-3.5 text-sm font-semibold text-white shadow-[4px_4px_0px_#ccff00] transition-all hover:-translate-y-0.5 hover:shadow-[6px_6px_0px_#ccff00] disabled:opacity-50 disabled:pointer-events-none"
-            >
-              <GoogleIcon className="size-4" />
-              {isGoogleLoading ? "Connecting..." : "Continue with Google"}
-            </button>
-            <button
-              type="button"
-              onClick={onGithubContinue}
-              className="w-full inline-flex items-center justify-center gap-2 rounded-none border-[3px] border-[#11110f] bg-white px-6 py-3.5 text-sm font-semibold text-[#11110f] shadow-[4px_4px_0px_rgba(0,0,0,0.15)] transition-all hover:-translate-y-0.5 hover:shadow-[6px_6px_0px_rgba(0,0,0,0.15)]"
-            >
-              <Github strokeWidth={2.5} className="size-4" />
-              Continue with GitHub
-            </button>
-          </div>
+          {/* Auth Buttons / Forms */}
+          {role === "teacher" ? (
+            <form className="space-y-3 pt-2" onSubmit={(e) => {
+              e.preventDefault();
+              onEmailSignIn?.(email, password);
+            }}>
+              <input
+                type="email"
+                placeholder="Teacher Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full rounded-none border-[3px] border-[#11110f] px-4 py-2.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#ccff00] transition-all bg-white text-[#11110f]"
+                required
+              />
+              <input
+                type="password"
+                placeholder="Password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full rounded-none border-[3px] border-[#11110f] px-4 py-2.5 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-[#ccff00] transition-all bg-white text-[#11110f]"
+                required
+              />
+              <button
+                type="submit"
+                disabled={isGoogleLoading}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-none border-[3px] border-[#11110f] bg-[#11110f] px-6 py-3.5 text-sm font-semibold text-white shadow-[4px_4px_0px_#ccff00] transition-all hover:-translate-y-0.5 hover:shadow-[6px_6px_0px_#ccff00] disabled:opacity-50 disabled:pointer-events-none"
+              >
+                {isGoogleLoading ? "Connecting..." : "Sign In"}
+              </button>
+            </form>
+          ) : (
+            <div className="space-y-3 pt-2">
+              <button
+                type="button"
+                onClick={onGoogleContinue}
+                disabled={isGoogleLoading}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-none border-[3px] border-[#11110f] bg-[#11110f] px-6 py-3.5 text-sm font-semibold text-white shadow-[4px_4px_0px_#ccff00] transition-all hover:-translate-y-0.5 hover:shadow-[6px_6px_0px_#ccff00] disabled:opacity-50 disabled:pointer-events-none"
+              >
+                <GoogleIcon className="size-4" />
+                {isGoogleLoading ? "Connecting..." : "Continue with Google"}
+              </button>
+              <button
+                type="button"
+                onClick={onGithubContinue}
+                className="w-full inline-flex items-center justify-center gap-2 rounded-none border-[3px] border-[#11110f] bg-white px-6 py-3.5 text-sm font-semibold text-[#11110f] shadow-[4px_4px_0px_rgba(0,0,0,0.15)] transition-all hover:-translate-y-0.5 hover:shadow-[6px_6px_0px_rgba(0,0,0,0.15)]"
+              >
+                <Github strokeWidth={2.5} className="size-4" />
+                Continue with GitHub
+              </button>
+            </div>
+          )}
 
           {/* Feedback */}
           {feedbackMessage ? (

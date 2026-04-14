@@ -12,8 +12,8 @@ export type RouteName =
   | "smart-compiler"
   | "classroom"
   | "teacher"
-  | "teacher"
   | "teacher-session"
+  | "feedback"
   | "not-found";
 
 type TeacherSubView = "lab" | "analytics" | "students" | "sessions" | "settings" | "materials";
@@ -23,8 +23,15 @@ type RouteMatch =
   | { name: "login"; pathname: string }
   | { name: "smart-compiler"; pathname: string }
   | { name: "classroom"; pathname: string }
+  | { name: "feedback"; pathname: string }
   | { name: "teacher"; pathname: string; view: TeacherSubView }
-  | { name: "teacher-session"; pathname: string; roomId: string }
+  | {
+      name: "teacher-session";
+      pathname: string;
+      sessionId: string;
+      studentId: string;
+      taskId: string;
+    }
   | { name: "not-found"; pathname: string };
 
 type RouterContextValue = {
@@ -58,6 +65,10 @@ const resolveRoute = (pathname: string): RouteMatch => {
     return { name: "classroom", pathname: path };
   }
 
+  if (path === (appPaths as any).feedback) {
+    return { name: "feedback", pathname: path };
+  }
+
   if (path === appPaths.teacher) {
     return { name: "teacher", pathname: path, view: "lab" };
   }
@@ -79,9 +90,15 @@ const resolveRoute = (pathname: string): RouteMatch => {
 
   const sessionPrefix = "/teacher/session/";
   if (path.startsWith(sessionPrefix)) {
-    const roomId = decodeURIComponent(path.slice(sessionPrefix.length));
-    if (roomId) {
-      return { name: "teacher-session", pathname: path, roomId };
+    const parts = path.slice(sessionPrefix.length).split("/").map(decodeURIComponent);
+    if (parts.length >= 3 && parts[0] && parts[1] && parts[2]) {
+      return {
+        name: "teacher-session",
+        pathname: path,
+        sessionId: parts[0],
+        studentId: parts[1],
+        taskId: parts.slice(2).join("/"),
+      };
     }
   }
 

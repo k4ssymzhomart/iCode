@@ -1,147 +1,239 @@
 import { Response } from "express";
+import { JoinSessionRequest, JoinSessionResponse } from "../../../shared/types";
 import { AuthenticatedRequest } from "../middleware/auth";
+import {
+  assertStudentInSession,
+  assertTaskBelongsToSession,
+  assertUserRole,
+  buildTeacherSession,
+  buildTeacherSessionSnapshot,
+  buildOverviewSnippet,
+  getSessionTasks,
+  getTeacherLiveSessionRecord,
+  loadSessionRecord,
+  normalizeSessionControls,
+  updateSessionStudentActivity,
+} from "../lib/classroom";
+import { sendControllerError } from "../lib/responses";
 import { supabaseAdmin } from "../supabaseClient";
-import { JoinSessionRequest, JoinSessionResponse, LabSession, Task } from "../../../shared/types";
 
-export const handleJoinClassroom = async (req: AuthenticatedRequest, res: Response) => {
+export const handleJoinClassroom = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
     const userId = req.user!.id;
     const body: JoinSessionRequest = req.body;
 
-    if (!body.joinCode) {
-      res.status(400).json({ success: false, error: "Join code is required" });
+    await assertUserRole(userId, ["student"]);
+
+    if (!body.joinCode || !/^\d{5}$/.test(body.joinCode)) {
+      res.status(400).json({
+        success: false,
+        error: "A valid 5-digit join code is required.",
+      });
       return;
     }
 
-    // Lookup classroom
-    const { data: classroom, error: classroomError } = await supabaseAdmin
-      .from("classrooms")
-      .select("*")
-      .eq("join_code", body.joinCode)
-      .single();
-
-    if (classroomError || !classroom) {
-      res.status(404).json({ success: false, appState: "not_found", error: "Classroom not found" });
-      return;
-    }
-
-    // Verify user profile exists
-    const { data: profile } = await supabaseAdmin
-      .from("profiles")
-      .select("role")
-      .eq("id", userId)
-      .single();
-
-    if (!profile) {
-      res.status(401).json({ success: false, appState: "unauthorized", error: "Profile not found" });
-      return;
-    }
-
-    // Prevent teachers from accidentally joining as students through this endpoint (unless intended)
-    if (profile.role === "teacher" && classroom.teacher_id !== userId) {
-      // Teachers can visit their own classroom or we allow them to test
-    }
-
-    // Find the active session for this classroom
-    const { data: session, error: sessionError } = await supabaseAdmin
+    const { data: sessionRow, error: sessionError } = await supabaseAdmin
       .from("lab_sessions")
       .select("*")
-      .eq("classroom_id", classroom.id)
-      .eq("state", "active")
-      .order("start_time", { ascending: false })
-      .limit(1)
-      .single();
+      .eq("join_code", body.joinCode)
+      .maybeSingle();
 
-    if (sessionError && sessionError.code !== "PGRST116") {
-      res.status(500).json({ success: false, error: "Failed to query sessions" });
+    if (sessionError) {
+      throw sessionError;
+    }
+
+    if (!sessionRow) {
+      res.status(404).json({
+        success: false,
+        appState: "not_found",
+        error: "No live session matches that code.",
+      });
       return;
     }
 
-    if (!session) {
-      res.json({ success: false, appState: "unauthorized", error: "No active session found for this classroom" });
+    if (sessionRow.state !== "live") {
+      res.status(403).json({
+        success: false,
+        appState: "forbidden",
+        error: "Only live sessions can be joined.",
+      });
       return;
     }
 
-    // Fetch Task strictly
-    const { data: taskData, error: taskError } = await supabaseAdmin
-      .from("tasks")
-      .select("*")
-      .eq("id", session.task_id)
-      .single();
+    const { membership } = await assertStudentInSession(userId, sessionRow.id);
+    const tasks = await getSessionTasks(sessionRow.id, sessionRow);
+    const activeTaskId =
+      sessionRow.active_task_id ??
+      tasks.find((task) => task.isActive)?.taskId ??
+      sessionRow.task_id;
+    const activeTask = activeTaskId
+      ? tasks.find((task) => task.taskId === activeTaskId)?.task
+      : undefined;
 
-    if (taskError || !taskData) {
-      res.status(500).json({ success: false, error: "Failed to load task for session" });
+    if (!activeTaskId || !activeTask) {
+      res.status(409).json({
+        success: false,
+        error: "This session does not have an active task yet.",
+      });
       return;
     }
 
-    const task: Task = {
-      id: taskData.id,
-      title: taskData.title,
-      description: taskData.description,
-      initialCode: taskData.initial_code,
-      testCases: taskData.test_cases,
-      language: taskData.language as any,
-    };
+    await updateSessionStudentActivity(sessionRow.id, userId, {
+      status: "active",
+      currentTaskId: membership.current_task_id ?? activeTaskId,
+      overviewSnippet: membership.overview_snippet ?? buildOverviewSnippet(activeTask.initialCode),
+    });
+
+    await supabaseAdmin.from("student_metrics").upsert(
+      {
+        session_id: sessionRow.id,
+        task_id: activeTaskId,
+        student_id: userId,
+      },
+      { onConflict: "session_id, task_id, student_id" },
+    );
+
+    const session = await buildTeacherSession({
+      ...sessionRow,
+      active_task_id: activeTaskId,
+    });
 
     const response: JoinSessionResponse = {
       success: true,
       sessionId: session.id,
-      task: task,
-      config: session.config,
+      session,
+      task: activeTask,
+      activeTask,
+      tasks,
+      membership: {
+        sessionId: session.id,
+        studentId: userId,
+        status: "active",
+        helpStatus: membership.help_status ?? "none",
+        joinedAt: membership.joined_at ?? new Date().toISOString(),
+        lastActivityAt: new Date().toISOString(),
+        currentTaskId: membership.current_task_id ?? activeTaskId,
+        overviewSnippet:
+          membership.overview_snippet ?? buildOverviewSnippet(activeTask.initialCode),
+      },
+      config: normalizeSessionControls(sessionRow.controls ?? sessionRow.config),
     };
 
     res.json(response);
-  } catch (err) {
-    res.status(500).json({ success: false, error: "Internal server error" });
+  } catch (error) {
+    sendControllerError(res, error);
   }
 };
 
-export const handleGetTeacherActiveSession = async (req: AuthenticatedRequest, res: Response) => {
+export const handleGetTeacherActiveSession = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
     const userId = req.user!.id;
-    
-    // Verify teacher
-    const { data: profile } = await supabaseAdmin.from("profiles").select("role").eq("id", userId).single();
-    if (profile?.role !== "teacher") {
-      res.status(403).json({ error: "Forbidden" });
+    await assertUserRole(userId, ["teacher"]);
+
+    const sessionRow = await getTeacherLiveSessionRecord(userId);
+    if (!sessionRow) {
+      res.json({ success: true, snapshot: null });
       return;
     }
 
-    // Get teacher's first classroom (since we haven't built classroom multi-management UI)
-    const { data: classroom } = await supabaseAdmin.from("classrooms").select("*").eq("teacher_id", userId).limit(1).single();
-    if (!classroom) {
-      res.json({ success: true, session: null });
+    const snapshot = await buildTeacherSessionSnapshot(sessionRow.id);
+    res.json({ success: true, snapshot });
+  } catch (error) {
+    sendControllerError(res, error);
+  }
+};
+
+export const handleSessionActivity = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const userId = req.user!.id;
+    await assertUserRole(userId, ["student"]);
+
+    const {
+      sessionId,
+      taskId,
+      status,
+      overviewSnippet,
+    }: {
+      sessionId?: string;
+      taskId?: string;
+      status?: "joined" | "active" | "idle" | "help" | "resolved" | "completed";
+      overviewSnippet?: string;
+    } = req.body;
+
+    if (!sessionId || !taskId) {
+      res.status(400).json({
+        success: false,
+        error: "sessionId and taskId are required.",
+      });
       return;
     }
 
-    // Get active session
-    const { data: session } = await supabaseAdmin
-      .from("lab_sessions")
-      .select("*, tasks(id, title)")
-      .eq("classroom_id", classroom.id)
-      .eq("state", "active")
-      .order("start_time", { ascending: false })
-      .limit(1)
-      .single();
+    const { session } = await assertStudentInSession(userId, sessionId);
+    await assertTaskBelongsToSession(sessionId, taskId, session);
 
-    if (!session) {
-      res.json({ success: true, session: null, classroom });
-      return;
-    }
-
-    res.json({ 
-      success: true, 
-      classroom,
-      session: {
-         id: session.id,
-         state: session.state,
-         config: session.config,
-         task: session.tasks ? (session.tasks as any).title : "Unknown Task",
-         taskId: session.task_id,
-      }
+    await updateSessionStudentActivity(sessionId, userId, {
+      status: status ?? "active",
+      currentTaskId: taskId,
+      overviewSnippet:
+        typeof overviewSnippet === "string"
+          ? buildOverviewSnippet(overviewSnippet)
+          : undefined,
     });
 
-  } catch(e) {
-    res.status(500).json({ error: "Server error" });
+    res.json({ success: true });
+  } catch (error) {
+    sendControllerError(res, error);
+  }
+};
+
+export const handleGetStudentSessionSnapshot = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
+  try {
+    const userId = req.user!.id;
+    const sessionId = String(req.query.sessionId ?? "");
+
+    if (!sessionId) {
+      res.status(400).json({ success: false, error: "sessionId is required." });
+      return;
+    }
+
+    const { membership } = await assertStudentInSession(userId, sessionId);
+    const session = await loadSessionRecord(sessionId);
+    const taskSet = await getSessionTasks(sessionId, session);
+    const activeTask =
+      taskSet.find((task) => task.taskId === (session.active_task_id ?? session.task_id)) ??
+      taskSet.find((task) => task.isActive) ??
+      taskSet[0];
+
+    res.json({
+      success: true,
+      session: await buildTeacherSession(session),
+      tasks: taskSet,
+      activeTask: activeTask?.task ?? null,
+      membership: {
+        sessionId,
+        studentId: userId,
+        status: membership.status,
+        helpStatus: membership.help_status ?? "none",
+        joinedAt: membership.joined_at ?? undefined,
+        lastActivityAt: membership.last_activity_at ?? undefined,
+        currentTaskId: membership.current_task_id ?? undefined,
+        overviewSnippet: membership.overview_snippet ?? undefined,
+        helpRequestedAt: membership.help_requested_at ?? undefined,
+      },
+    });
+  } catch (error) {
+    sendControllerError(res, error);
   }
 };

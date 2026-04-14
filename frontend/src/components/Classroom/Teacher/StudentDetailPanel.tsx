@@ -2,22 +2,28 @@ import React from "react";
 import Editor from "@monaco-editor/react";
 import { StudentData } from "./mockData";
 import { X, SearchCode, MessageSquare, Lightbulb, PenTool, ExternalLink, ShieldAlert } from "lucide-react";
+import CollaborativeEditor from "../CollaborativeEditor";
+import { useAuth } from "@/lib/auth-context";
 
 interface StudentDetailPanelProps {
   student: StudentData;
+  sessionId?: string;
+  taskId?: string;
   onClose: () => void;
   onIntervene: (type: string, studentId: string) => void;
 }
 
-const StudentDetailPanel: React.FC<StudentDetailPanelProps> = ({ student, onClose, onIntervene }) => {
+const StudentDetailPanel: React.FC<StudentDetailPanelProps> = ({ student, sessionId, taskId, onClose, onIntervene }) => {
+  const { profile } = useAuth();
   return (
     <div className="absolute right-0 top-0 bottom-0 w-full md:w-[450px] bg-white border-l-2 border-[#11110f] shadow-[-10px_0_20px_rgba(0,0,0,0.05)] z-40 flex flex-col font-sans transition-transform transform translate-x-0">
       
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-4 border-b-2 border-[#11110f] bg-[#11110f] shrink-0">
          <div className="flex items-center gap-3">
-            <div className={`w-8 h-8 ${student.avatarColor} border-2 border-white`} style={{
+            <div className={`w-8 h-8 border-2 border-white bg-center bg-cover bg-no-repeat ${!student.avatarUrl ? student.avatarColor : "bg-white"}`} style={{
                borderRadius: student.avatarShape === 'circle' ? '50%' : student.avatarShape === 'triangle' ? '0' : '20%',
+               backgroundImage: student.avatarUrl ? `url(${student.avatarUrl})` : undefined,
             }} />
             <h2 className="text-white font-black uppercase tracking-wider">{student.name}</h2>
          </div>
@@ -36,21 +42,39 @@ const StudentDetailPanel: React.FC<StudentDetailPanelProps> = ({ student, onClos
                Read Only
             </span>
          </div>
-         <Editor
-           height="100%"
-           language="python"
-           value={student.mockCode}
-           theme="vs"
-           options={{
-             readOnly: true,
-             minimap: { enabled: false },
-             scrollBeyondLastLine: false,
-             fontSize: 12,
-             fontFamily: "'Consolas', 'Courier New', monospace",
-             padding: { top: 32, bottom: 16 },
-             renderLineHighlight: "none",
-           }}
-         />
+         {sessionId && taskId ? (
+           <div className="absolute inset-0 top-[26px]">
+             <CollaborativeEditor
+               sessionId={sessionId}
+               taskId={taskId}
+               workspaceStudentId={student.id}
+               currentUserId={profile?.id ?? "teacher-overlay"}
+               userName={profile?.fullName ?? "Teacher"}
+               role="teacher"
+               mode="view"
+               readOnly={true}
+               showInterventionTray={false}
+             />
+             {/* Mask to prevent interaction if readOnly doesn't cover everything */}
+             <div className="absolute inset-0 z-50 pointer-events-none" />
+           </div>
+         ) : (
+           <Editor
+             height="100%"
+             language="python"
+             value={student.mockCode}
+             theme="vs"
+             options={{
+               readOnly: true,
+               minimap: { enabled: false },
+               scrollBeyondLastLine: false,
+               fontSize: 12,
+               fontFamily: "'Consolas', 'Courier New', monospace",
+               padding: { top: 32, bottom: 16 },
+               renderLineHighlight: "none",
+             }}
+           />
+         )}
       </div>
 
       {/* Detail & Interventions */}

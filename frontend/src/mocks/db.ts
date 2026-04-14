@@ -78,13 +78,13 @@ class MockDatabase {
     if (!classroom) return null;
 
     // Simulate finding or creating an active session for the classroom task
-    let session = Object.values(this.sessions).find(s => s.classroomId === classroom.id && s.state === "active");
+    let session = Object.values(this.sessions).find(s => s.classroomId === classroom.id && s.state === "live");
     if (!session && classroom.activeTaskId) {
       session = {
         id: "room_mock_" + Math.random().toString(36).substring(7),
         classroomId: classroom.id,
         taskId: classroom.activeTaskId,
-        state: "active",
+        state: "live",
         startTime: new Date().toISOString()
       };
       this.sessions[session.id] = session;

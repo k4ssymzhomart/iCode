@@ -1,137 +1,218 @@
 import { Response } from "express";
 import { AuthenticatedRequest } from "../middleware/auth";
+import {
+  assertStudentInSession,
+  assertStudentCanAccessWorkspace,
+  assertTeacherCanAccessStudentWorkspace,
+  assertUserRole,
+  buildOverviewSnippet,
+  getSessionTasks,
+  loadCodeWorkspace,
+  loadSessionRecord,
+  upsertCodeWorkspace,
+  updateSessionStudentActivity,
+  HttpError,
+} from "../lib/classroom";
+import { sendControllerError } from "../lib/responses";
 import { supabaseAdmin } from "../supabaseClient";
 
-export const handleSaveCode = async (req: AuthenticatedRequest, res: Response) => {
+export const handleSaveCode = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
     const userId = req.user!.id;
-    const { sessionId, taskId, code } = req.body;
+    const {
+      sessionId,
+      taskId,
+      studentId,
+      code,
+      revision,
+    }: {
+      sessionId?: string;
+      taskId?: string;
+      studentId?: string;
+      code?: string;
+      revision?: number;
+    } = req.body;
 
-    if (!sessionId || !taskId || code === undefined) {
-      res.status(400).json({ error: "sessionId, taskId, and code are required" });
-      return;
+    if (!sessionId || !taskId || typeof code !== "string") {
+      throw new HttpError(400, "sessionId, taskId, and code are required.");
     }
 
-    const { error } = await supabaseAdmin
-      .from("code_files")
-      .upsert({
-        session_id: sessionId,
-        task_id: taskId,
-        student_id: userId,
-        code_content: code,
-        updated_at: new Date().toISOString()
-      }, { onConflict: "session_id, task_id, student_id" });
-
-    if (error) {
-      res.status(500).json({ error: "Failed to save code", details: error.message });
-      return;
+    const role = await assertUserRole(userId, ["teacher", "student", "admin"]);
+    const targetStudentId = role === "teacher" ? studentId : userId;
+    if (!targetStudentId) {
+      throw new HttpError(400, "studentId is required for teacher saves.");
     }
 
-    res.json({ success: true, savedAt: new Date().toISOString() });
+    if (role === "teacher") {
+      await assertTeacherCanAccessStudentWorkspace(
+        userId,
+        sessionId,
+        targetStudentId,
+        taskId,
+      );
+    } else {
+      await assertStudentCanAccessWorkspace(userId, sessionId, taskId);
+    }
+
+    const existingWorkspace = await loadCodeWorkspace(sessionId, taskId, targetStudentId);
+    const nextRevision =
+      typeof revision === "number" && Number.isFinite(revision)
+        ? revision
+        : (existingWorkspace?.revision ?? 0) + 1;
+
+    await upsertCodeWorkspace({
+      sessionId,
+      taskId,
+      studentId: targetStudentId,
+      code,
+      updatedBy: userId,
+      updatedByRole: role,
+      revision: nextRevision,
+    });
+
+    await updateSessionStudentActivity(sessionId, targetStudentId, {
+      currentTaskId: taskId,
+      overviewSnippet: buildOverviewSnippet(code),
+      status: role === "student" ? "active" : undefined,
+    });
+
+    res.json({
+      success: true,
+      revision: nextRevision,
+      savedAt: new Date().toISOString(),
+    });
   } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
+    sendControllerError(res, error);
   }
 };
 
-export const handleLoadCode = async (req: AuthenticatedRequest, res: Response) => {
+export const handleLoadCode = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
     const userId = req.user!.id;
-    const { sessionId, taskId, studentId } = req.query;
+    const sessionId = String(req.query.sessionId ?? "");
+    const taskId = String(req.query.taskId ?? "");
+    const requestedStudentId =
+      typeof req.query.studentId === "string" ? req.query.studentId : undefined;
 
     if (!sessionId || !taskId) {
-      res.status(400).json({ error: "sessionId and taskId are required" });
-      return;
+      throw new HttpError(400, "sessionId and taskId are required.");
     }
 
-    // Identify requester role
-    const { data: requester } = await supabaseAdmin
-      .from("profiles")
-      .select("role")
-      .eq("id", userId)
-      .single();
-
-    if (!requester) {
-      res.status(401).json({ error: "Profile not found" });
-      return;
+    const role = await assertUserRole(userId, ["teacher", "student", "admin"]);
+    const targetStudentId = role === "teacher" ? requestedStudentId : userId;
+    if (!targetStudentId) {
+      throw new HttpError(400, "studentId is required for teacher code access.");
     }
 
-    // Determine target student ID to query
-    let targetStudentId = userId;
-    if (requester.role === "teacher") {
-      if (!studentId) {
-        res.status(400).json({ error: "studentId query parameter is required for teachers" });
-        return;
-      }
-      targetStudentId = studentId as string;
-      
-      // Optionally verify the teacher actually owns the classroom for this session
-      const { data: sessionData } = await supabaseAdmin
-        .from("lab_sessions")
-        .select("classroom_id, classrooms(teacher_id)")
-        .eq("id", sessionId)
-        .single();
-        
-      if (!sessionData || (sessionData.classrooms as any).teacher_id !== userId) {
-         res.status(403).json({ error: "Not authorized to view this session's code" });
-         return;
-      }
+    if (role === "teacher") {
+      await assertTeacherCanAccessStudentWorkspace(
+        userId,
+        sessionId,
+        targetStudentId,
+        taskId,
+      );
     } else {
-      // If student tries to pass another studentId, reject
-      if (studentId && studentId !== userId) {
-        res.status(403).json({ error: "Students can only access their own code" });
-        return;
-      }
+      await assertStudentCanAccessWorkspace(userId, sessionId, taskId);
     }
 
-    const { data: codeFile, error } = await supabaseAdmin
-      .from("code_files")
-      .select("code_content, updated_at")
-      .eq("session_id", sessionId)
-      .eq("task_id", taskId)
-      .eq("student_id", targetStudentId)
-      .single();
-
-    if (error && error.code !== "PGRST116") {
-      res.status(500).json({ error: "Failed to load code", details: error.message });
+    const workspace = await loadCodeWorkspace(sessionId, taskId, targetStudentId);
+    if (workspace) {
+      res.json({
+        success: true,
+        code: workspace.code_content,
+        updatedAt: workspace.updated_at,
+        revision: workspace.revision ?? 1,
+        updatedByRole: workspace.updated_by_role ?? undefined,
+      });
       return;
     }
 
-    if (!codeFile) {
-      res.json({ success: true, code: null });
-      return;
-    }
+    const session = await loadSessionRecord(sessionId);
+    const taskEntry = (await getSessionTasks(sessionId, session)).find(
+      (entry) => entry.taskId === taskId,
+    );
 
-    res.json({ success: true, code: codeFile.code_content, updatedAt: codeFile.updated_at });
+    res.json({
+      success: true,
+      code: taskEntry?.task.initialCode ?? null,
+      updatedAt: null,
+      revision: 0,
+      updatedByRole: null,
+    });
   } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
+    sendControllerError(res, error);
   }
 };
 
-export const handleHelpRequest = async (req: AuthenticatedRequest, res: Response) => {
+export const handleHelpRequest = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
     const userId = req.user!.id;
-    const { sessionId } = req.body;
+    const sessionId = String(req.body?.sessionId ?? "");
+    const taskId = typeof req.body?.taskId === "string" ? req.body.taskId : undefined;
 
     if (!sessionId) {
-      res.status(400).json({ error: "sessionId is required" });
-      return;
+      throw new HttpError(400, "sessionId is required.");
     }
 
-    const { error } = await supabaseAdmin
+    await assertUserRole(userId, ["student"]);
+    const { session, membership } = await assertStudentInSession(userId, sessionId);
+    const resolvedTaskId =
+      taskId ??
+      membership.current_task_id ??
+      session.active_task_id ??
+      session.task_id ??
+      null;
+
+    if (resolvedTaskId) {
+      await assertStudentCanAccessWorkspace(userId, sessionId, resolvedTaskId);
+    }
+
+    const { data: pendingRequest, error: pendingError } = await supabaseAdmin
       .from("help_requests")
-      .insert({
-        session_id: sessionId,
-        student_id: userId,
-        status: "pending"
-      });
+      .select("id")
+      .eq("session_id", sessionId)
+      .eq("student_id", userId)
+      .in("status", ["pending", "active_intervention"])
+      .limit(1)
+      .maybeSingle();
 
-    if (error) {
-      res.status(500).json({ error: "Failed to request help", details: error.message });
-      return;
+    if (pendingError) {
+      throw new HttpError(500, `Failed to inspect existing help queue: ${pendingError.message}`);
     }
+
+    if (!pendingRequest) {
+      const { error: insertError } = await supabaseAdmin
+        .from("help_requests")
+        .insert({
+          session_id: sessionId,
+          student_id: userId,
+          task_id: resolvedTaskId,
+          status: "pending",
+        });
+
+      if (insertError) {
+        throw new HttpError(500, `Failed to request help: ${insertError.message}`);
+      }
+    }
+
+    await updateSessionStudentActivity(sessionId, userId, {
+      status: "help",
+      helpStatus: "requested",
+      helpRequestedAt: new Date().toISOString(),
+      currentTaskId: resolvedTaskId ?? undefined,
+    });
 
     res.json({ success: true });
   } catch (error) {
-    res.status(500).json({ error: "Internal server error" });
+    sendControllerError(res, error);
   }
 };

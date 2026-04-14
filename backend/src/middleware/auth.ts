@@ -5,6 +5,9 @@ export interface AuthenticatedRequest extends Request {
   user?: {
     id: string;
     email?: string;
+    role?: "student" | "teacher" | "admin";
+    fullName?: string;
+    avatarUrl?: string;
   };
 }
 
@@ -28,6 +31,26 @@ export const requireAuth = async (
     return;
   }
 
-  req.user = { id: data.user.id, email: data.user.email };
+  const metadata = data.user.user_metadata ?? {};
+  const role =
+    metadata.role === "student" ||
+    metadata.role === "teacher" ||
+    metadata.role === "admin"
+      ? metadata.role
+      : undefined;
+
+  req.user = {
+    id: data.user.id,
+    email: data.user.email,
+    role,
+    fullName:
+      typeof metadata.full_name === "string" && metadata.full_name.trim()
+        ? metadata.full_name
+        : undefined,
+    avatarUrl:
+      typeof metadata.avatar_url === "string" && metadata.avatar_url.trim()
+        ? metadata.avatar_url
+        : undefined,
+  };
   next();
 };

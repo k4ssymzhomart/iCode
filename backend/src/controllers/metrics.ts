@@ -1,125 +1,145 @@
 import { Response } from "express";
-import { AuthenticatedRequest } from "../middleware/auth";
-import { supabaseAdmin } from "../supabaseClient";
 import { StudentMetric } from "../../../shared/types";
+import { AuthenticatedRequest } from "../middleware/auth";
+import {
+  assertTeacherOwnsSession,
+  assertUserRole,
+  buildTeacherSessionSnapshot,
+  HttpError,
+  loadSessionRecord,
+  normalizeSessionControls,
+} from "../lib/classroom";
+import { sendControllerError } from "../lib/responses";
+import { supabaseAdmin } from "../supabaseClient";
 
-export const handleLeaderboard = async (req: AuthenticatedRequest, res: Response) => {
+export const handleLeaderboard = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
-    const { sessionId, taskId } = req.query;
+    const teacherId = req.user!.id;
+    const sessionId = String(req.query.sessionId ?? "");
+    const taskId = String(req.query.taskId ?? "");
 
     if (!sessionId || !taskId) {
-      res.status(400).json({ error: "sessionId and taskId are required" });
-      return;
+      throw new HttpError(400, "sessionId and taskId are required.");
     }
 
-    const userId = req.user!.id;
-    const { data: profile } = await supabaseAdmin.from("profiles").select("role").eq("id", userId).single();
-    if (profile?.role !== "teacher") {
-      res.status(403).json({ error: "Forbidden: Leaderboard is teacher-only" });
-      return;
-    }
+    await assertUserRole(teacherId, ["teacher"]);
+    await assertTeacherOwnsSession(teacherId, sessionId);
 
-    const { data: metrics, error } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from("student_metrics")
       .select(`
-        id, session_id, task_id, student_id, run_attempts, corrections_used, hints_used, explain_used, total_time_seconds, completed, completed_at,
-        profiles ( full_name, avatar_url )
+        id,
+        session_id,
+        task_id,
+        student_id,
+        run_attempts,
+        corrections_used,
+        hints_used,
+        explain_used,
+        total_time_seconds,
+        completed,
+        completed_at,
+        profiles (
+          full_name,
+          avatar_url
+        )
       `)
       .eq("session_id", sessionId)
       .eq("task_id", taskId);
 
     if (error) {
-      res.status(500).json({ error: "Failed to fetch leaderboard", details: error.message });
-      return;
+      throw new HttpError(500, `Failed to load leaderboard: ${error.message}`);
     }
 
-    // Map to shared type
-    const payload: StudentMetric[] = (metrics || []).map(m => ({
-      id: m.id,
-      sessionId: m.session_id,
-      taskId: m.task_id,
-      studentId: m.student_id,
-      runAttempts: m.run_attempts,
-      correctionsUsed: m.corrections_used,
-      hintsUsed: m.hints_used,
-      explainUsed: m.explain_used,
-      totalTimeSeconds: m.total_time_seconds,
-      completed: m.completed,
-      completedAt: m.completed_at,
-      profile: m.profiles ? {
-        fullName: (m.profiles as any).full_name,
-        avatarUrl: (m.profiles as any).avatar_url
-      } : undefined
+    const leaderboard: StudentMetric[] = (data ?? []).map((row: any) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      taskId: row.task_id,
+      studentId: row.student_id,
+      runAttempts: row.run_attempts,
+      correctionsUsed: row.corrections_used,
+      hintsUsed: row.hints_used,
+      explainUsed: row.explain_used,
+      totalTimeSeconds: row.total_time_seconds,
+      completed: row.completed,
+      completedAt: row.completed_at ?? undefined,
+      profile: row.profiles
+        ? {
+            fullName: row.profiles.full_name,
+            avatarUrl: row.profiles.avatar_url ?? undefined,
+          }
+        : undefined,
     }));
 
-    res.json({ success: true, leaderboard: payload });
-  } catch (err) {
-    res.status(500).json({ error: "Internal server error" });
+    res.json({ success: true, leaderboard });
+  } catch (error) {
+    sendControllerError(res, error);
   }
 };
 
-export const handleGetHelpRequests = async (req: AuthenticatedRequest, res: Response) => {
+export const handleGetHelpRequests = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
-    const userId = req.user!.id;
-    const { sessionId } = req.query;
-
-    // Must be Teacher
-    const { data: profile } = await supabaseAdmin.from("profiles").select("role").eq("id", userId).single();
-    if (profile?.role !== "teacher") {
-      res.status(403).json({ error: "Forbidden" });
-      return;
+    const teacherId = req.user!.id;
+    const sessionId = String(req.query.sessionId ?? "");
+    if (!sessionId) {
+      throw new HttpError(400, "sessionId is required.");
     }
 
-    const { data: requests, error } = await supabaseAdmin
-      .from("help_requests")
-      .select(`
-        id, session_id, student_id, status, requested_at,
-        profiles ( full_name )
-      `)
-      .eq("session_id", sessionId)
-      .eq("status", "pending")
-      .order("requested_at", { ascending: true });
+    await assertUserRole(teacherId, ["teacher"]);
+    await assertTeacherOwnsSession(teacherId, sessionId);
 
-    if (error) {
-      res.status(500).json({ error: "Query failed", details: error.message });
-      return;
-    }
-
-    res.json({ success: true, requests });
-  } catch(e) {
-    res.status(500).json({ error: "Interval server error" });
+    const snapshot = await buildTeacherSessionSnapshot(sessionId);
+    res.json({ success: true, requests: snapshot.helpRequests });
+  } catch (error) {
+    sendControllerError(res, error);
   }
 };
 
-export const handleUpdateSessionControl = async (req: AuthenticatedRequest, res: Response) => {
+export const handleUpdateSessionControl = async (
+  req: AuthenticatedRequest,
+  res: Response,
+) => {
   try {
-    const userId = req.user!.id;
-    const { sessionId, config, state } = req.body;
+    const teacherId = req.user!.id;
+    const sessionId = String(req.body?.sessionId ?? "");
+    const nextState = typeof req.body?.state === "string" ? req.body.state : undefined;
+    const controls = req.body?.config ?? req.body?.controls;
 
-    // Must be Teacher
-    const { data: profile } = await supabaseAdmin.from("profiles").select("role").eq("id", userId).single();
-    if (profile?.role !== "teacher") {
-      res.status(403).json({ error: "Forbidden" });
-      return;
+    if (!sessionId) {
+      throw new HttpError(400, "sessionId is required.");
     }
 
-    const updates: any = {};
-    if (config !== undefined) updates.config = config;
-    if (state !== undefined) updates.state = state;
+    await assertUserRole(teacherId, ["teacher"]);
+    await assertTeacherOwnsSession(teacherId, sessionId);
+
+    const updates: Record<string, unknown> = {};
+    if (nextState) {
+      updates.state = nextState;
+    }
+    if (controls !== undefined) {
+      const normalizedControls = normalizeSessionControls(controls);
+      updates.controls = normalizedControls;
+      updates.config = normalizedControls;
+    }
 
     const { error } = await supabaseAdmin
       .from("lab_sessions")
       .update(updates)
-      .eq("id", sessionId)
-      .eq("classrooms.teacher_id", userId); // Ensure ownership
+      .eq("id", sessionId);
 
     if (error) {
-      res.status(500).json({ error: "Update failed", details: error.message });
-      return;
+      throw new HttpError(500, `Failed to update session control: ${error.message}`);
     }
 
-    res.json({ success: true });
-  } catch(e) {
-    res.status(500).json({ error: "Interval server error" });
+    const updated = await loadSessionRecord(sessionId);
+    res.json({ success: true, session: updated });
+  } catch (error) {
+    sendControllerError(res, error);
   }
 };

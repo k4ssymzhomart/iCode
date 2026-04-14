@@ -78,8 +78,9 @@ const ClassroomGrid: React.FC<ClassroomGridProps> = ({ students, onSelectStudent
                   className={`border-2 flex p-4 cursor-pointer transition-all duration-200 items-center justify-between ${statusStyle}`}
                 >
                    <div className="flex items-center gap-3">
-                      <div className={`w-10 h-10 ${student.avatarColor} border-2 border-[#11110f] flex-shrink-0`} style={{
+                      <div className={`w-10 h-10 border-2 border-[#11110f] flex-shrink-0 bg-center bg-cover bg-no-repeat ${!student.avatarUrl ? student.avatarColor : "bg-white"}`} style={{
                          borderRadius: student.avatarShape === 'circle' ? '50%' : student.avatarShape === 'triangle' ? '0' : '20%',
+                         backgroundImage: student.avatarUrl ? `url(${student.avatarUrl})` : undefined,
                       }} />
                       <div className="flex flex-col">
                         <h3 className="font-bold text-base leading-tight text-[#11110f] truncate max-w-[140px]">{student.name}</h3>
@@ -87,6 +88,11 @@ const ClassroomGrid: React.FC<ClassroomGridProps> = ({ students, onSelectStudent
                           {icon}
                           <span className="text-[10px] font-black uppercase tracking-widest">{statusText}</span>
                         </div>
+                        {student.currentCodeSnippet ? (
+                          <div className="mt-2 max-w-[180px] truncate border-t border-dashed border-gray-200 pt-2 font-mono text-[10px] font-bold text-gray-500">
+                            {student.currentCodeSnippet}
+                          </div>
+                        ) : null}
                       </div>
                    </div>
                 </div>

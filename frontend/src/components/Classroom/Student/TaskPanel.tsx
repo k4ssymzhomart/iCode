@@ -1,12 +1,13 @@
 import React, { useState } from "react";
-import { MockTask } from "./mockData";
 import { Lightbulb, ListOrdered, ChevronRight, Activity, Terminal } from "lucide-react";
+import { Task } from "@shared/types";
 
 interface TaskPanelProps {
-  task: MockTask;
+  task: Task & { logicSteps?: any[] };
+  allowHint?: boolean;
 }
 
-const TaskPanel: React.FC<TaskPanelProps> = ({ task }) => {
+const TaskPanel: React.FC<TaskPanelProps> = ({ task, allowHint = true }) => {
   const [showLogicSteps, setShowLogicSteps] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
 
@@ -20,10 +21,10 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ task }) => {
             Current Task
          </span>
          <span className={`text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 ${
-           task.difficulty === 'Easy' ? 'bg-[#ccff00] text-[#11110f]' : 
-           task.difficulty === 'Medium' ? 'bg-orange-400 text-[#11110f]' : 'bg-rose-500 text-white'
+           (task.difficulty ?? "Medium") === 'Easy' ? 'bg-[#ccff00] text-[#11110f]' : 
+           (task.difficulty ?? "Medium") === 'Medium' ? 'bg-orange-400 text-[#11110f]' : 'bg-rose-500 text-white'
          }`}>
-           {task.difficulty}
+           {task.difficulty ?? "Medium"}
          </span>
       </div>
 
@@ -41,12 +42,56 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ task }) => {
             </div>
           </div>
 
+          {(task.inputFormat || task.outputFormat || (task.constraints?.length ?? 0) > 0) && (
+            <div className="grid gap-3">
+              {task.inputFormat ? (
+                <div className="border-2 border-gray-200 bg-white p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                    Input Format
+                  </div>
+                  <div className="mt-2 text-sm font-medium text-[#11110f]">
+                    {task.inputFormat}
+                  </div>
+                </div>
+              ) : null}
+
+              {task.outputFormat ? (
+                <div className="border-2 border-gray-200 bg-white p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                    Output Format
+                  </div>
+                  <div className="mt-2 text-sm font-medium text-[#11110f]">
+                    {task.outputFormat}
+                  </div>
+                </div>
+              ) : null}
+
+              {(task.constraints?.length ?? 0) > 0 ? (
+                <div className="border-2 border-gray-200 bg-white p-3">
+                  <div className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+                    Constraints
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {(task.constraints ?? []).map((constraint, index) => (
+                      <div
+                        key={`${constraint}-${index}`}
+                        className="border border-gray-200 bg-[#fafafa] px-2 py-1 text-xs font-bold text-[#11110f]"
+                      >
+                        {constraint}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+
           {/* Test cases */}
           <div className="space-y-3">
             <h3 className="text-xs font-bold uppercase tracking-widest text-[#11110f] border-b border-gray-200 pb-2">
               Examples
             </h3>
-            {task.tests.map((test, i) => (
+            {task.testCases && task.testCases.length > 0 ? task.testCases.map((test, i) => (
               <div key={i} className="bg-white border-2 border-gray-200 p-3 space-y-2">
                  <div className="flex flex-col">
                     <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Input:</span>
@@ -57,14 +102,18 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ task }) => {
                     <code className="text-sm font-mono text-[#ccff00] bg-[#11110f] px-2 py-0.5 font-bold self-start mt-1">{test.expectedOutput}</code>
                  </div>
               </div>
-            ))}
+            )) : (
+              <div className="border-2 border-dashed border-gray-300 bg-white p-3 text-xs font-bold uppercase tracking-widest text-gray-400">
+                No examples provided.
+              </div>
+            )}
           </div>
 
           <hr className="border-t-2 border-gray-200 my-6" />
 
           {/* Smart Tooling */}
           <div className="space-y-3">
-             <button className="w-full flex items-center justify-between border-2 border-[#11110f] bg-white px-4 py-3 hover:bg-gray-50 transition-colors">
+             <button disabled={!allowHint} className={`w-full flex items-center justify-between border-2 border-[#11110f] px-4 py-3 transition-colors ${allowHint ? "bg-white hover:bg-gray-50" : "bg-gray-100 text-gray-400 cursor-not-allowed"}`}>
                 <span className="flex items-center gap-2 text-sm font-bold text-[#11110f] uppercase tracking-wider">
                    <Lightbulb className="h-4 w-4 text-orange-400" />
                    Show a Hint
@@ -99,8 +148,8 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ task }) => {
                  </h2>
                  
                  <div className="space-y-6 relative border-l-2 border-gray-800 ml-4 pl-6">
-                    {task.logicSteps.map((step, i) => (
-                      <div key={step.id} className="relative">
+                    {(task.logicSteps || []).map((step, i) => (
+                      <div key={step.id || i} className="relative">
                          {/* Circle indicator */}
                          <div className={`absolute -left-[35px] top-0 w-4 h-4 rounded-full border-2 border-[#11110f] transition-colors duration-500 mt-1 ${
                             i <= currentStepIndex ? "bg-[#ccff00]" : "bg-gray-800 border-gray-700"
@@ -114,7 +163,7 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ task }) => {
                                {step.description}
                             </p>
                             
-                            {i === currentStepIndex && i < task.logicSteps.length - 1 && (
+                            {i === currentStepIndex && i < (task.logicSteps || []).length - 1 && (
                                <button 
                                  onClick={() => setCurrentStepIndex(i + 1)}
                                  className="mt-4 border-2 border-white text-white px-4 py-1.5 text-xs font-bold uppercase tracking-widest hover:bg-white hover:text-[#11110f] transition-all"

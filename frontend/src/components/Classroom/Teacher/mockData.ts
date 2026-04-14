@@ -5,6 +5,7 @@ export type StudentStatus = "coding" | "stuck" | "needs-help" | "solved" | "offl
 export interface StudentData {
   id: string;
   name: string;
+  avatarUrl?: string;
   avatarSrc?: string;
   avatarColor: string;
   avatarShape: string;
@@ -17,6 +18,10 @@ export interface StudentData {
   lastError: string | null;
   helpRequestedAt: Date | null;
   successRate: number;
+  currentTaskId?: string;
+  currentCodeSnippet?: string;
+  pendingInterventionCount?: number;
+  lastActivityAt?: string;
 }
 
 const mockNames = [

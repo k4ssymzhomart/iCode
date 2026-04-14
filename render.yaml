@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: icode
+    env: node
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false # Set securely in Render dashboard
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false # Set securely in Render dashboard
+      - key: LIVEBLOCKS_SECRET_KEY
+        sync: false # Set securely in Render dashboard
