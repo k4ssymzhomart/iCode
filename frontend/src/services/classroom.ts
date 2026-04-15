@@ -2,6 +2,7 @@ import type {
   EditorIntervention,
   JoinSessionRequest,
   JoinSessionResponse,
+  ResolvedHelpResponse,
   SessionControls,
   SessionStudent,
   Task,
@@ -27,6 +28,7 @@ export const classroomService = {
       tasks: TeacherSession["taskSet"];
       activeTask: Task | null;
       membership?: SessionStudent;
+      resolvedHelpResponsesByTask?: Record<string, ResolvedHelpResponse | undefined>;
     }>(`/api/classroom/session?sessionId=${encodeURIComponent(sessionId)}`);
   },
 
@@ -215,12 +217,19 @@ export const classroomService = {
     });
   },
 
-  resolveHelpRequest(sessionId: string, studentId: string) {
-    return authorizedJsonFetch<{ success: boolean }>(
+  resolveHelpRequest(
+    sessionId: string,
+    payload: {
+      studentId: string;
+      taskId: string;
+      responseNotes: ResolvedHelpResponse["notes"];
+    },
+  ) {
+    return authorizedJsonFetch<{ success: boolean; response: ResolvedHelpResponse }>(
       `/api/teacher/sessions/${encodeURIComponent(sessionId)}/help/resolve`,
       {
         method: "POST",
-        body: JSON.stringify({ studentId }),
+        body: JSON.stringify(payload),
       },
     );
   },

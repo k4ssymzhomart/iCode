@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  ResolvedHelpResponse,
   SessionControls,
   SessionStudent,
   SessionTask,
@@ -9,9 +10,13 @@ import LobbyScreen from "@/components/Classroom/Student/LobbyScreen";
 import LabLayout from "@/components/Classroom/Student/LabLayout";
 import TaskPanel from "@/components/Classroom/Student/TaskPanel";
 import CollaborativeEditor from "@/components/Classroom/CollaborativeEditor";
-import StudentCompilerPanel from "@/components/Classroom/Student/StudentCompilerPanel";
+import StudentCompilerPanel, {
+  createEmptyStudentCompilerPanelState,
+  type StudentCompilerPanelState,
+} from "@/components/Classroom/Student/StudentCompilerPanel";
 import ClassmatesPanel from "@/components/Classroom/Student/ClassmatesPanel";
-import { LoadingState, ErrorState } from "@/components/ui/app-states";
+import ClassroomLoader from "@/components/Classroom/Student/ClassroomLoader";
+import { ErrorState } from "@/components/ui/app-states";
 import { useAuth } from "@/lib/auth-context";
 import {
   buildSessionRoomId,
@@ -45,28 +50,81 @@ const deriveHelpState = (
   return "idle";
 };
 
+const resolveSelectedTaskId = (
+  tasks: SessionTask[],
+  preferredTaskId?: string,
+  teacherActiveTaskId?: string,
+) => {
+  const validTaskIds = new Set(tasks.map((task) => task.taskId));
+
+  if (preferredTaskId && validTaskIds.has(preferredTaskId)) {
+    return preferredTaskId;
+  }
+
+  if (teacherActiveTaskId && validTaskIds.has(teacherActiveTaskId)) {
+    return teacherActiveTaskId;
+  }
+
+  return tasks[0]?.taskId ?? "";
+};
+
+const buildEditorCodeCache = (tasks: SessionTask[]) =>
+  tasks.reduce<Record<string, string>>((cache, sessionTask) => {
+    cache[sessionTask.taskId] = sessionTask.task.initialCode ?? "";
+    return cache;
+  }, {});
+
+const mergeEditorCodeCache = (
+  current: Record<string, string>,
+  tasks: SessionTask[],
+) =>
+  tasks.reduce<Record<string, string>>((cache, sessionTask) => {
+    cache[sessionTask.taskId] =
+      current[sessionTask.taskId] ?? sessionTask.task.initialCode ?? "";
+    return cache;
+  }, {});
+
+const pruneCompilerStateCache = (
+  current: Record<string, StudentCompilerPanelState>,
+  tasks: SessionTask[],
+) =>
+  tasks.reduce<Record<string, StudentCompilerPanelState>>((cache, sessionTask) => {
+    if (current[sessionTask.taskId]) {
+      cache[sessionTask.taskId] = current[sessionTask.taskId];
+    }
+    return cache;
+  }, {});
+
 const StudentLabSession = ({
   session,
   initialTasks,
   initialControls,
-  initialActiveTaskId,
+  initialTeacherActiveTaskId,
+  initialSelectedTaskId,
   initialMembership,
+  initialResolvedHelpResponsesByTask,
 }: {
   session: TeacherSession;
   initialTasks: SessionTask[];
   initialControls: SessionControls;
-  initialActiveTaskId: string;
+  initialTeacherActiveTaskId: string;
+  initialSelectedTaskId: string;
   initialMembership?: SessionStudent;
+  initialResolvedHelpResponsesByTask?: Record<string, ResolvedHelpResponse | undefined>;
 }) => {
   const { profile } = useAuth();
   const broadcast = useSessionBroadcastEvent();
   const sessionStatus = useSessionStatus();
   const [tasks, setTasks] = useState<SessionTask[]>(initialTasks);
   const [controls, setControls] = useState<SessionControls>(initialControls);
-  const [activeTaskId, setActiveTaskId] = useState(initialActiveTaskId);
-  const [editorCode, setEditorCode] = useState(
-    initialTasks.find((task) => task.taskId === initialActiveTaskId)?.task.initialCode ?? "",
+  const [teacherActiveTaskId, setTeacherActiveTaskId] = useState(initialTeacherActiveTaskId);
+  const [selectedTaskId, setSelectedTaskId] = useState(initialSelectedTaskId);
+  const [editorCodeByTaskId, setEditorCodeByTaskId] = useState<Record<string, string>>(
+    () => buildEditorCodeCache(initialTasks),
   );
+  const [compilerStateByTaskId, setCompilerStateByTaskId] = useState<
+    Record<string, StudentCompilerPanelState>
+  >({});
   const [broadcastMessage, setBroadcastMessage] = useState<string | null>(
     session.broadcastMessage ?? null,
   );
@@ -76,12 +134,22 @@ const StudentLabSession = ({
   const [helpState, setHelpState] = useState<StudentHelpState>(
     deriveHelpState(initialMembership),
   );
+  const [resolvedHelpResponsesByTask, setResolvedHelpResponsesByTask] = useState<
+    Record<string, ResolvedHelpResponse | undefined>
+  >(initialResolvedHelpResponsesByTask ?? {});
   const activityTimerRef = useRef<number | null>(null);
 
-  const activeTask =
-    tasks.find((task) => task.taskId === activeTaskId)?.task ??
-    tasks.find((task) => task.isActive)?.task ??
-    tasks[0]?.task;
+  const selectedTaskEntry =
+    tasks.find((task) => task.taskId === selectedTaskId) ??
+    tasks.find((task) => task.taskId === teacherActiveTaskId) ??
+    tasks[0];
+  const selectedTask = selectedTaskEntry?.task;
+  const selectedTaskCode = selectedTaskEntry
+    ? editorCodeByTaskId[selectedTaskEntry.taskId] ?? selectedTaskEntry.task.initialCode ?? ""
+    : "";
+  const selectedCompilerState = selectedTaskEntry
+    ? compilerStateByTaskId[selectedTaskEntry.taskId] ?? createEmptyStudentCompilerPanelState()
+    : createEmptyStudentCompilerPanelState();
 
   const roster = session.roster ?? [];
 
@@ -113,18 +181,32 @@ const StudentLabSession = ({
     }
 
     if (event.type === "active-task") {
-      setActiveTaskId(event.taskId);
+      setTeacherActiveTaskId(event.taskId);
+      setTasks((current) =>
+        current.map((task) => ({
+          ...task,
+          isActive: task.taskId === event.taskId,
+        })),
+      );
       return;
     }
 
     if (event.type === "help-resolved" && event.studentId === profile?.id) {
       setHelpState("resolved");
+      setResolvedHelpResponsesByTask((current) => ({
+        ...current,
+        [event.taskId]: event.response,
+      }));
     }
   });
 
   useEffect(() => {
-    setEditorCode(activeTask?.initialCode ?? "");
-  }, [activeTask?.id, activeTask?.initialCode]);
+    setEditorCodeByTaskId((current) => mergeEditorCodeCache(current, tasks));
+    setCompilerStateByTaskId((current) => pruneCompilerStateCache(current, tasks));
+    setSelectedTaskId((current) =>
+      resolveSelectedTaskId(tasks, current, teacherActiveTaskId),
+    );
+  }, [tasks, teacherActiveTaskId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -136,12 +218,23 @@ const StudentLabSession = ({
           return;
         }
 
+        const nextTeacherActiveTaskId =
+          response.session.activeTaskId ?? response.activeTask?.id ?? teacherActiveTaskId;
+
         setTasks(response.tasks);
-        setActiveTaskId(response.session.activeTaskId ?? response.activeTask?.id ?? activeTaskId);
+        setTeacherActiveTaskId(nextTeacherActiveTaskId);
+        setSelectedTaskId((current) =>
+          resolveSelectedTaskId(
+            response.tasks,
+            response.membership?.currentTaskId ?? current,
+            nextTeacherActiveTaskId,
+          ),
+        );
         setBroadcastMessage(response.session.broadcastMessage ?? null);
         setPinnedHint(response.session.pinnedHint ?? null);
         setControls(response.session.controls);
         setHelpState(deriveHelpState(response.membership));
+        setResolvedHelpResponsesByTask(response.resolvedHelpResponsesByTask ?? {});
       } catch (error) {
         console.error("[ClassroomModePage] Failed to refresh session", error);
       }
@@ -152,10 +245,40 @@ const StudentLabSession = ({
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [activeTaskId, session.id]);
+  }, [session.id, teacherActiveTaskId]);
 
-  const publishActivity = (nextCode: string) => {
-    if (!activeTask || !profile) {
+  useEffect(() => {
+    if (!profile || !selectedTaskEntry) {
+      return;
+    }
+
+    const snippet =
+      editorCodeByTaskId[selectedTaskEntry.taskId] ?? selectedTaskEntry.task.initialCode ?? "";
+
+    void classroomService
+      .updateStudentActivity({
+        sessionId: session.id,
+        taskId: selectedTaskEntry.taskId,
+        status: "active",
+        overviewSnippet: snippet,
+      })
+      .then(() => {
+        safeBroadcast({
+          type: "student-activity",
+          studentId: profile.id,
+          currentTaskId: selectedTaskEntry.taskId,
+          status: "active",
+          snippet,
+          helpStatus: helpState === "requested" ? "requested" : "none",
+        });
+      })
+      .catch((error) => {
+        console.error("[ClassroomModePage] Failed to persist selected task", error);
+      });
+  }, [profile, selectedTaskEntry, session.id]);
+
+  const publishActivity = (taskId: string, nextCode: string) => {
+    if (!profile) {
       return;
     }
 
@@ -168,14 +291,14 @@ const StudentLabSession = ({
       try {
         await classroomService.updateStudentActivity({
           sessionId: session.id,
-          taskId: activeTask.id,
+          taskId,
           status: "active",
           overviewSnippet: snippet,
         });
         safeBroadcast({
           type: "student-activity",
           studentId: profile.id,
-          currentTaskId: activeTask.id,
+          currentTaskId: taskId,
           status: "active",
           snippet,
           helpStatus: helpState === "requested" ? "requested" : "none",
@@ -187,26 +310,29 @@ const StudentLabSession = ({
   };
 
   const handleRequestHelp = async () => {
-    if (!activeTask || helpState === "requesting" || helpState === "requested") {
+    if (!selectedTaskEntry || helpState === "requesting" || helpState === "requested") {
       return;
     }
 
     setHelpState("requesting");
     try {
-      await classroomService.requestHelp({ sessionId: session.id, taskId: activeTask.id });
+      await classroomService.requestHelp({
+        sessionId: session.id,
+        taskId: selectedTaskEntry.taskId,
+      });
       setHelpState("requested");
       safeBroadcast({
         type: "help-requested",
         studentId: profile?.id ?? "",
-        taskId: activeTask.id,
+        taskId: selectedTaskEntry.taskId,
         requestedAt: new Date().toISOString(),
       });
       safeBroadcast({
         type: "student-activity",
         studentId: profile?.id ?? "",
-        currentTaskId: activeTask.id,
+        currentTaskId: selectedTaskEntry.taskId,
         status: "help",
-        snippet: editorCode,
+        snippet: selectedTaskCode,
         helpStatus: "requested",
         helpRequestedAt: new Date().toISOString(),
       });
@@ -221,7 +347,7 @@ const StudentLabSession = ({
     [profile?.id, roster],
   );
 
-  if (!profile || !activeTask) {
+  if (!profile || !selectedTaskEntry || !selectedTask) {
     return (
       <ErrorState
         title="Session Unavailable"
@@ -242,30 +368,57 @@ const StudentLabSession = ({
       onRequestHelp={handleRequestHelp}
       broadcastMessage={broadcastMessage}
       pinnedHint={pinnedHint}
-      leftPanel={<TaskPanel task={activeTask} allowHint={controls.allowHint} />}
+      resolvedHelpResponse={
+        selectedTaskEntry
+          ? resolvedHelpResponsesByTask[selectedTaskEntry.taskId] ?? null
+          : null
+      }
+      currentTaskTitle={selectedTask.title}
+      leftPanel={
+        <TaskPanel
+          task={selectedTask}
+          allowHint={controls.allowHint}
+          tasks={tasks}
+          selectedTaskId={selectedTaskEntry.taskId}
+          teacherActiveTaskId={teacherActiveTaskId}
+          onSelectTask={setSelectedTaskId}
+        />
+      }
       centerPanel={
         <CollaborativeEditor
           sessionId={session.id}
-          taskId={activeTask.id}
+          taskId={selectedTaskEntry.taskId}
           workspaceStudentId={profile.id}
           currentUserId={profile.id}
           userName={profile.fullName}
-          initialCode={activeTask.initialCode}
-          language={activeTask.language}
+          initialCode={selectedTask.initialCode}
+          language={selectedTask.language}
           role="student"
-          onChange={(value) => setEditorCode(value)}
-          onSnippetChange={publishActivity}
+          onChange={(value) =>
+            setEditorCodeByTaskId((current) => ({
+              ...current,
+              [selectedTaskEntry.taskId]: value,
+            }))
+          }
+          onSnippetChange={(value) => publishActivity(selectedTaskEntry.taskId, value)}
         />
       }
       rightPanel={
         <StudentCompilerPanel
-          code={editorCode}
+          code={selectedTaskCode}
           sessionId={session.id}
-          taskId={activeTask.id}
-          task={activeTask}
+          taskId={selectedTaskEntry.taskId}
+          task={selectedTask}
           config={controls}
           broadcastMessage={broadcastMessage}
           pinnedHint={pinnedHint}
+          panelState={selectedCompilerState}
+          onPanelStateChange={(state) =>
+            setCompilerStateByTaskId((current) => ({
+              ...current,
+              [selectedTaskEntry.taskId]: state,
+            }))
+          }
         />
       }
       classmatesPanel={<ClassmatesPanel students={classmates} />}
@@ -280,9 +433,11 @@ const ClassroomModePage = () => {
   const [sessionData, setSessionData] = useState<{
     session: TeacherSession;
     tasks: SessionTask[];
-    activeTaskId: string;
+    teacherActiveTaskId: string;
+    selectedTaskId: string;
     controls: SessionControls;
     membership?: SessionStudent;
+    resolvedHelpResponsesByTask?: Record<string, ResolvedHelpResponse | undefined>;
   } | null>(null);
 
   const handleJoin = async (joinCode: string) => {
@@ -301,12 +456,22 @@ const ClassroomModePage = () => {
         response.tasks &&
         response.activeTask
       ) {
+        const teacherActiveTaskId =
+          response.session.activeTaskId ?? response.tasks.find((task) => task.isActive)?.taskId ?? "";
+        const selectedTaskId = resolveSelectedTaskId(
+          response.tasks,
+          response.membership?.currentTaskId ?? response.activeTask.id,
+          teacherActiveTaskId,
+        );
+
         setSessionData({
           session: response.session,
           tasks: response.tasks,
-          activeTaskId: response.activeTask.id,
+          teacherActiveTaskId,
+          selectedTaskId,
           controls: response.config ?? response.session.controls,
           membership: response.membership,
+          resolvedHelpResponsesByTask: response.resolvedHelpResponsesByTask,
         });
         setAppState("lab");
       } else {
@@ -324,7 +489,7 @@ const ClassroomModePage = () => {
   }
 
   if (appState === "loading") {
-    return <LoadingState message="Joining Session..." />;
+    return <ClassroomLoader message="Joining classroom..." />;
   }
 
   if (appState === "error") {
@@ -351,13 +516,13 @@ const ClassroomModePage = () => {
     <SessionRoomProvider
       id={buildSessionRoomId(sessionData.session.id)}
       initialPresence={{
-        currentTaskId: sessionData.activeTaskId,
+        currentTaskId: sessionData.selectedTaskId,
         status: "active",
         workspaceStudentId: profile.id,
         mode: null,
       }}
       initialStorage={{
-        activeTaskId: sessionData.activeTaskId,
+        activeTaskId: sessionData.teacherActiveTaskId,
         broadcastMessage: sessionData.session.broadcastMessage ?? null,
         pinnedHint: sessionData.session.pinnedHint ?? null,
         snippets: {},
@@ -369,8 +534,10 @@ const ClassroomModePage = () => {
         session={sessionData.session}
         initialTasks={sessionData.tasks}
         initialControls={sessionData.controls}
-        initialActiveTaskId={sessionData.activeTaskId}
+        initialTeacherActiveTaskId={sessionData.teacherActiveTaskId}
+        initialSelectedTaskId={sessionData.selectedTaskId}
         initialMembership={sessionData.membership}
+        initialResolvedHelpResponsesByTask={sessionData.resolvedHelpResponsesByTask}
       />
     </SessionRoomProvider>
   );

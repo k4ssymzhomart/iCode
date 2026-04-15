@@ -1,15 +1,49 @@
-import React, { useState } from "react";
-import { Lightbulb, ListOrdered, ChevronRight, Activity, Terminal } from "lucide-react";
-import { Task } from "@shared/types";
+import React, { useEffect, useState } from "react";
+import { Lightbulb, ListOrdered, ChevronLeft, ChevronRight, Activity, CheckCircle2, X } from "lucide-react";
+import { SessionTask, Task } from "@shared/types";
 
 interface TaskPanelProps {
   task: Task & { logicSteps?: any[] };
   allowHint?: boolean;
+  tasks?: SessionTask[];
+  selectedTaskId?: string;
+  teacherActiveTaskId?: string;
+  onSelectTask?: (taskId: string) => void;
 }
 
-const TaskPanel: React.FC<TaskPanelProps> = ({ task, allowHint = true }) => {
+const TaskPanel: React.FC<TaskPanelProps> = ({
+  task,
+  allowHint = true,
+  tasks,
+  selectedTaskId,
+  teacherActiveTaskId,
+  onSelectTask,
+}) => {
   const [showLogicSteps, setShowLogicSteps] = useState(false);
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const currentTaskIndex =
+    tasks && selectedTaskId
+      ? tasks.findIndex((sessionTask) => sessionTask.taskId === selectedTaskId)
+      : -1;
+  const hasTaskNavigation = (tasks?.length ?? 0) > 1 && currentTaskIndex >= 0;
+  const previousTaskId =
+    hasTaskNavigation && currentTaskIndex > 0
+      ? tasks?.[currentTaskIndex - 1]?.taskId
+      : undefined;
+  const nextTaskId =
+    hasTaskNavigation && tasks && currentTaskIndex < tasks.length - 1
+      ? tasks[currentTaskIndex + 1]?.taskId
+      : undefined;
+
+  useEffect(() => {
+    setShowLogicSteps(false);
+    setCurrentStepIndex(0);
+  }, [task.id]);
+
+  const logicSteps = task.logicSteps ?? [];
+  const totalSteps = logicSteps.length;
+  const clampedStepIndex =
+    totalSteps > 0 ? Math.min(currentStepIndex, totalSteps - 1) : 0;
 
   return (
     <div className="h-full flex flex-col bg-[#fafafa]">
@@ -30,6 +64,97 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ task, allowHint = true }) => {
 
       <div className="flex-1 overflow-y-auto w-full relative">
         <div className="p-4 space-y-6 lg:p-6">
+          {hasTaskNavigation ? (
+            <div className="border-2 border-[#11110f] bg-white p-3 shadow-[2px_2px_0_#11110f]">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                    Question Navigator
+                  </div>
+                  <div className="text-sm font-bold text-[#11110f]">
+                    Question {currentTaskIndex + 1} of {tasks?.length ?? 0}
+                  </div>
+                </div>
+                {teacherActiveTaskId === selectedTaskId ? (
+                  <span className="border-2 border-[#11110f] bg-[#ccff00] px-2 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                    Teacher Focus
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  disabled={!previousTaskId}
+                  onClick={() => previousTaskId && onSelectTask?.(previousTaskId)}
+                  className="inline-flex items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  Previous
+                </button>
+                <button
+                  type="button"
+                  disabled={!nextTaskId}
+                  onClick={() => nextTaskId && onSelectTask?.(nextTaskId)}
+                  className="inline-flex items-center justify-center gap-2 border-2 border-[#11110f] bg-[#11110f] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#ccff00] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {tasks && tasks.length > 1 ? (
+            <div className="space-y-3">
+              <div className="text-xs font-bold uppercase tracking-widest text-[#11110f] border-b border-gray-200 pb-2">
+                Assigned Tasks
+              </div>
+              <div className="space-y-2">
+                {tasks.map((sessionTask, index) => {
+                  const isSelected = sessionTask.taskId === selectedTaskId;
+                  const isTeacherTask = sessionTask.taskId === teacherActiveTaskId;
+
+                  return (
+                    <button
+                      key={sessionTask.taskId}
+                      type="button"
+                      onClick={() => onSelectTask?.(sessionTask.taskId)}
+                      className={`w-full border-2 px-3 py-3 text-left transition-colors ${
+                        isSelected
+                          ? "border-[#11110f] bg-[#11110f] text-white"
+                          : "border-gray-200 bg-white text-[#11110f] hover:bg-gray-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="text-[10px] font-black uppercase tracking-[0.2em] opacity-70">
+                            Task {index + 1}
+                          </div>
+                          <div className="truncate text-sm font-bold">
+                            {sessionTask.task.title}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {isTeacherTask ? (
+                            <span className="border border-[#ccff00] bg-[#ccff00] px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                              Teacher Live
+                            </span>
+                          ) : null}
+                          {isSelected ? (
+                            <span className="border border-white/40 px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-white">
+                              Open
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
           {/* Title & Desc */}
           <div>
             <h2 className="text-xl font-black text-[#11110f] tracking-tight mb-3">
@@ -135,48 +260,144 @@ const TaskPanel: React.FC<TaskPanelProps> = ({ task, allowHint = true }) => {
         </div>
 
         {/* Logic Steps Overlay */}
-        <div className={`absolute inset-0 bg-white z-10 transition-transform duration-300 ${showLogicSteps ? "translate-x-0" : "translate-x-full"}`}>
-           <div className="h-full flex flex-col bg-[#11110f]">
-              <div className="bg-[#ccff00] px-4 py-3 flex items-center gap-2 shrink-0 cursor-pointer hover:bg-[#bdf300]" onClick={() => setShowLogicSteps(false)}>
-                 <ChevronRight className="h-5 w-5 text-[#11110f] rotate-180" />
-                 <span className="text-[#11110f] font-bold uppercase tracking-wider text-xs">Back to Task</span>
+        <div className={`absolute inset-0 z-10 bg-[#f7f5ef] transition-transform duration-300 ${showLogicSteps ? "translate-x-0" : "translate-x-full"}`}>
+          <div className="flex h-full flex-col">
+            <div className="sticky top-0 z-10 border-b-2 border-[#11110f] bg-white px-4 py-4 shadow-[0_4px_0_rgba(17,17,15,0.05)]">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-black uppercase tracking-[0.24em] text-gray-500">
+                    Logic Steps
+                  </div>
+                  <h2 className="mt-1 text-base font-black uppercase tracking-tight text-[#11110f]">
+                    {task.title}
+                  </h2>
+                  <div className="mt-2 text-[11px] font-bold uppercase tracking-[0.2em] text-gray-500">
+                    {totalSteps > 0 ? `Step ${clampedStepIndex + 1} / ${totalSteps}` : "No steps yet"}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setShowLogicSteps(false)}
+                  className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] shadow-[2px_2px_0_#11110f]"
+                >
+                  <X className="h-4 w-4" />
+                  Close
+                </button>
               </div>
-              
-              <div className="flex-1 p-6 overflow-y-auto">
-                 <h2 className="text-xl font-black text-white tracking-tight mb-8 uppercase">
-                   Logic Steps
-                 </h2>
-                 
-                 <div className="space-y-6 relative border-l-2 border-gray-800 ml-4 pl-6">
-                    {(task.logicSteps || []).map((step, i) => (
-                      <div key={step.id || i} className="relative">
-                         {/* Circle indicator */}
-                         <div className={`absolute -left-[35px] top-0 w-4 h-4 rounded-full border-2 border-[#11110f] transition-colors duration-500 mt-1 ${
-                            i <= currentStepIndex ? "bg-[#ccff00]" : "bg-gray-800 border-gray-700"
-                         }`} />
-                         
-                         <div className={`transition-all duration-500 ${i <= currentStepIndex ? "opacity-100 translate-y-0" : "opacity-30 translate-y-2 pointer-events-none"}`}>
-                            <h3 className={`text-sm font-bold uppercase tracking-wider mb-2 ${i === currentStepIndex ? 'text-[#ccff00]' : 'text-gray-400'}`}>
-                               Step {i + 1}: {step.title}
-                            </h3>
-                            <p className="text-sm text-gray-300 leading-relaxed font-medium">
-                               {step.description}
-                            </p>
-                            
-                            {i === currentStepIndex && i < (task.logicSteps || []).length - 1 && (
-                               <button 
-                                 onClick={() => setCurrentStepIndex(i + 1)}
-                                 className="mt-4 border-2 border-white text-white px-4 py-1.5 text-xs font-bold uppercase tracking-widest hover:bg-white hover:text-[#11110f] transition-all"
-                               >
-                                 Next Step
-                               </button>
-                            )}
-                         </div>
-                      </div>
-                    ))}
-                 </div>
+
+              <div className="mt-4 h-3 overflow-hidden border-2 border-[#11110f] bg-[#f1efe8]">
+                <div
+                  className="h-full bg-[#ccff00] transition-all duration-300"
+                  style={{
+                    width:
+                      totalSteps > 0
+                        ? `${((clampedStepIndex + 1) / totalSteps) * 100}%`
+                        : "0%",
+                  }}
+                />
               </div>
-           </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4">
+              {totalSteps === 0 ? (
+                <div className="border-2 border-dashed border-[#11110f] bg-white p-5 text-center text-xs font-bold uppercase tracking-[0.2em] text-gray-500">
+                  No logic steps were provided for this task yet.
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {logicSteps.map((step, index) => {
+                    const isCurrent = index === clampedStepIndex;
+                    const isCompleted = index < clampedStepIndex;
+
+                    return (
+                      <button
+                        key={step.id || index}
+                        type="button"
+                        onClick={() => setCurrentStepIndex(index)}
+                        className={`w-full border-2 text-left transition-all ${
+                          isCurrent
+                            ? "border-[#11110f] bg-white shadow-[4px_4px_0_#ccff00]"
+                            : isCompleted
+                              ? "border-[#11110f] bg-[#f2ffd1]"
+                              : "border-gray-200 bg-white hover:border-[#11110f]"
+                        }`}
+                      >
+                        <div className="flex items-start gap-3 p-4">
+                          <div
+                            className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border-2 text-xs font-black ${
+                              isCurrent
+                                ? "border-[#11110f] bg-[#11110f] text-[#ccff00]"
+                                : isCompleted
+                                  ? "border-[#11110f] bg-[#ccff00] text-[#11110f]"
+                                  : "border-gray-300 bg-[#fafafa] text-gray-500"
+                            }`}
+                          >
+                            {isCompleted ? <CheckCircle2 className="h-4 w-4" /> : index + 1}
+                          </div>
+
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                                Step {index + 1}
+                              </div>
+                              {isCurrent ? (
+                                <span className="border border-[#11110f] bg-[#11110f] px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-[#ccff00]">
+                                  Current
+                                </span>
+                              ) : null}
+                              {isCompleted ? (
+                                <span className="border border-[#11110f] bg-[#ccff00] px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                                  Completed
+                                </span>
+                              ) : null}
+                            </div>
+
+                            <div className="mt-2 text-sm font-bold text-[#11110f]">
+                              {step.title}
+                            </div>
+
+                            <div className={`mt-2 text-sm leading-relaxed text-[#4d493f] ${isCurrent ? "block" : "max-h-10 overflow-hidden"}`}>
+                              {step.description}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {totalSteps > 0 ? (
+              <div className="border-t-2 border-[#11110f] bg-white p-4">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    disabled={clampedStepIndex === 0}
+                    onClick={() => setCurrentStepIndex((current) => Math.max(0, current - 1))}
+                    className="inline-flex items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    Previous Step
+                  </button>
+                  <button
+                    type="button"
+                    disabled={clampedStepIndex >= totalSteps - 1}
+                    onClick={() =>
+                      setCurrentStepIndex((current) =>
+                        Math.min(totalSteps - 1, current + 1),
+                      )
+                    }
+                    className="inline-flex items-center justify-center gap-2 border-2 border-[#11110f] bg-[#11110f] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#ccff00] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next Step
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
 
       </div>

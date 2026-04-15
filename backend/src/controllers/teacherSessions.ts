@@ -18,6 +18,10 @@ import {
   loadSessionRecord,
   normalizeSessionControls,
   replaceSessionRoster,
+  isMissingHelpResponseColumnsError,
+  toResolvedHelpResponse,
+  toTeacherHelpNotes,
+  upsertLegacyResolvedHelpResponse,
   upsertCodeWorkspace,
   upsertSessionTasks,
   updateSessionStudentActivity,
@@ -360,15 +364,6 @@ export const handleSwitchSessionActiveTask = async (
       throw new HttpError(500, `Failed to update session active task: ${sessionError.message}`);
     }
 
-    const { error: studentError } = await supabaseAdmin
-      .from("session_students")
-      .update({ current_task_id: taskId })
-      .eq("session_id", sessionId);
-
-    if (studentError) {
-      throw new HttpError(500, `Failed to sync student active task: ${studentError.message}`);
-    }
-
     const updated = await loadSessionRecord(sessionId);
     res.json({ success: true, session: await buildTeacherSession(updated) });
   } catch (error) {
@@ -509,45 +504,99 @@ export const handleResolveHelpRequest = async (
     const teacherId = req.user!.id;
     const sessionId = resolveSessionId(req);
     const studentId = String(req.body?.studentId ?? "");
+    const taskId = String(req.body?.taskId ?? "");
+    const responseNotes = toTeacherHelpNotes(req.body?.responseNotes);
+
+    if (!studentId || !taskId) {
+      throw new HttpError(400, "studentId and taskId are required.");
+    }
 
     await assertUserRole(teacherId, ["teacher"]);
     await assertTeacherOwnsSession(teacherId, sessionId);
+    await assertTeacherCanAccessStudentWorkspace(teacherId, sessionId, studentId, taskId);
 
-    const { data: pendingRequest, error: requestError } = await supabaseAdmin
+    const { data: pendingRequests, error: requestError } = await supabaseAdmin
       .from("help_requests")
       .select("*")
       .eq("session_id", sessionId)
       .eq("student_id", studentId)
       .in("status", ["pending", "active_intervention"])
       .order("requested_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(10);
 
     if (requestError) {
       throw new HttpError(500, `Failed to load help request: ${requestError.message}`);
     }
 
-    if (pendingRequest) {
-      const { error: updateError } = await supabaseAdmin
+    const pendingRequest =
+      (pendingRequests ?? []).find((request) => request.task_id === taskId) ??
+      (pendingRequests ?? [])[0];
+
+    if (!pendingRequest) {
+      throw new HttpError(404, "No pending help request was found for this student.");
+    }
+
+    const resolvedAt = new Date().toISOString();
+    const { data: resolvedRows, error: updateError } = await supabaseAdmin
+      .from("help_requests")
+      .update({
+        status: "resolved",
+        resolved_at: resolvedAt,
+        resolution_notes: responseNotes,
+        resolved_by_teacher_id: teacherId,
+      })
+      .eq("id", pendingRequest.id)
+      .select("*")
+      .limit(1);
+
+    let response =
+      (resolvedRows ?? []).length > 0 ? toResolvedHelpResponse(resolvedRows![0]) : null;
+
+    if (updateError && isMissingHelpResponseColumnsError(updateError)) {
+      const { error: legacyResolveError } = await supabaseAdmin
         .from("help_requests")
         .update({
           status: "resolved",
-          resolved_at: new Date().toISOString(),
+          resolved_at: resolvedAt,
         })
         .eq("id", pendingRequest.id);
 
-      if (updateError) {
-        throw new HttpError(500, `Failed to resolve help request: ${updateError.message}`);
+      if (legacyResolveError) {
+        throw new HttpError(500, `Failed to resolve help request: ${legacyResolveError.message}`);
       }
+
+      await upsertLegacyResolvedHelpResponse({
+        sessionId,
+        taskId,
+        studentId,
+        teacherId,
+        requestId: pendingRequest.id,
+        resolvedAt,
+        notes: responseNotes,
+      });
+
+      response = {
+        requestId: pendingRequest.id,
+        taskId,
+        resolvedAt,
+        notes: responseNotes,
+      };
+    } else if (updateError || !(resolvedRows ?? []).length) {
+      throw new HttpError(500, `Failed to resolve help request: ${updateError?.message ?? "Unknown error"}`);
     }
 
     await updateSessionStudentActivity(sessionId, studentId, {
       status: "resolved",
       helpStatus: "resolved",
       helpRequestedAt: null,
+      currentTaskId: taskId,
     });
 
-    res.json({ success: true });
+    if (!response) {
+      throw new HttpError(500, "Resolved help response could not be created.");
+    }
+
+    res.json({ success: true, response });
   } catch (error) {
     sendControllerError(res, error);
   }

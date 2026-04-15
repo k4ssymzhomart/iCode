@@ -340,12 +340,16 @@ create table if not exists public.help_requests (
   task_id uuid references public.tasks(id) on delete set null,
   status text not null default 'pending',
   requested_at timestamp with time zone default timezone('utc'::text, now()) not null,
-  resolved_at timestamp with time zone
+  resolved_at timestamp with time zone,
+  resolution_notes jsonb not null default '[]'::jsonb,
+  resolved_by_teacher_id uuid references public.profiles(id) on delete set null
 );
 
 alter table public.help_requests
   add column if not exists task_id uuid references public.tasks(id) on delete set null,
-  add column if not exists resolved_at timestamp with time zone;
+  add column if not exists resolved_at timestamp with time zone,
+  add column if not exists resolution_notes jsonb not null default '[]'::jsonb,
+  add column if not exists resolved_by_teacher_id uuid references public.profiles(id) on delete set null;
 
 alter table public.help_requests drop constraint if exists help_requests_status_check;
 alter table public.help_requests

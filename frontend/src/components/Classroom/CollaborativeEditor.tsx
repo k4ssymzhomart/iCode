@@ -14,7 +14,7 @@ import type {
   EditorIntervention,
   EditorRange,
   Task,
-  TeacherInterventionMode,
+  TeacherFocusMode,
 } from "@shared/types";
 import { classroomService } from "@/services/classroom";
 import {
@@ -24,22 +24,16 @@ import {
   type LiveblocksEditorRange,
   useEditorBroadcastEvent,
   useEditorEventListener,
-  useEditorMutation,
   useEditorMyPresence,
   useEditorOthers,
   useEditorStatus,
-  useEditorStorage,
+  useEditorRoom,
 } from "@/lib/liveblocks";
-
-const starterCode = `import sys
-
-def solve(data: str) -> str:
-    # Write your logic here.
-    return data.strip()
-
-if __name__ == "__main__":
-    print(solve(sys.stdin.read()))
-`;
+import * as Y from "yjs";
+import { LiveblocksYjsProvider } from "@liveblocks/yjs";
+import { MonacoBinding } from "y-monaco";
+import type { Awareness as MonacoAwareness } from "y-protocols/awareness";
+import ClassroomLoader from "./Student/ClassroomLoader";
 
 interface ErrorBoundaryProps {
   children: React.ReactNode;
@@ -112,9 +106,10 @@ export interface CollaborativeEditorProps {
   currentUserId: string;
   userName: string;
   initialCode?: string;
+  workspaceCode?: string;
   language?: Task["language"];
   role?: "teacher" | "student";
-  mode?: TeacherInterventionMode;
+  mode?: TeacherFocusMode;
   readOnly?: boolean;
   onChange?: (code: string) => void;
   onSnippetChange?: (code: string) => void;
@@ -137,6 +132,96 @@ const decorationClasses: Record<EditorIntervention["type"], string> = {
   direct_edit: "icode-intervention-direct-edit",
 };
 
+const toMonacoAwareness = (
+  provider: LiveblocksYjsProvider,
+): MonacoAwareness => {
+  const awareness = provider.awareness as unknown as MonacoAwareness & {
+    clientID?: number;
+  };
+
+  if (awareness.clientID === undefined) {
+    awareness.clientID = provider.getYDoc().clientID;
+  }
+
+  return awareness;
+};
+
+type WorkspaceBootstrap = {
+  code: string;
+  revision: number;
+};
+
+const workspaceBootstrapCache = new Map<string, WorkspaceBootstrap>();
+const workspaceBootstrapPromiseCache = new Map<string, Promise<WorkspaceBootstrap>>();
+
+const primeWorkspaceBootstrap = (
+  roomKey: string,
+  snapshot: Pick<WorkspaceBootstrap, "code"> & Partial<WorkspaceBootstrap>,
+) => {
+  const current = workspaceBootstrapCache.get(roomKey);
+  workspaceBootstrapCache.set(roomKey, {
+    code: snapshot.code,
+    revision: snapshot.revision ?? current?.revision ?? 0,
+  });
+};
+
+const resolveWorkspaceBootstrap = async ({
+  roomKey,
+  sessionId,
+  taskId,
+  workspaceStudentId,
+  role,
+  fallbackCode,
+}: {
+  roomKey: string;
+  sessionId: string;
+  taskId: string;
+  workspaceStudentId: string;
+  role: "teacher" | "student";
+  fallbackCode?: string;
+}) => {
+  const cached = workspaceBootstrapCache.get(roomKey);
+  if (cached) {
+    return cached;
+  }
+
+  const pending = workspaceBootstrapPromiseCache.get(roomKey);
+  if (pending) {
+    return pending;
+  }
+
+  const bootstrapPromise = classroomService
+    .loadWorkspace({
+      sessionId,
+      taskId,
+      studentId: role === "teacher" ? workspaceStudentId : undefined,
+    })
+    .then((response) => {
+      const snapshot = {
+        code: response.code ?? fallbackCode ?? "",
+        revision: response.revision ?? 0,
+      };
+      workspaceBootstrapCache.set(roomKey, snapshot);
+      return snapshot;
+    })
+    .catch((error) => {
+      const snapshot = {
+        code: fallbackCode ?? "",
+        revision: 0,
+      };
+      workspaceBootstrapCache.set(roomKey, snapshot);
+      throw Object.assign(error instanceof Error ? error : new Error("Failed to load workspace"), {
+        snapshot,
+      });
+    })
+    .finally(() => {
+      workspaceBootstrapPromiseCache.delete(roomKey);
+    });
+
+  workspaceBootstrapPromiseCache.set(roomKey, bootstrapPromise);
+  return bootstrapPromise;
+};
+
 const WorkspaceLoader = forwardRef<CollaborativeEditorHandle, CollaborativeEditorProps>(
   function WorkspaceLoader(
     {
@@ -146,6 +231,7 @@ const WorkspaceLoader = forwardRef<CollaborativeEditorHandle, CollaborativeEdito
       currentUserId,
       userName,
       initialCode,
+      workspaceCode,
       language = "python",
       role = "student",
       mode = role === "teacher" ? "view" : undefined,
@@ -158,65 +244,88 @@ const WorkspaceLoader = forwardRef<CollaborativeEditorHandle, CollaborativeEdito
     },
     ref,
   ) {
-    const [workspaceCode, setWorkspaceCode] = useState(initialCode ?? starterCode);
-    const [workspaceRevision, setWorkspaceRevision] = useState(0);
-    const [isReady, setIsReady] = useState(false);
+    const roomKey = `${sessionId}:${workspaceStudentId}:${taskId}`;
+    const [workspaceBootstrap, setWorkspaceBootstrap] = useState<{
+      roomKey: string;
+      snapshot: WorkspaceBootstrap;
+    } | null>(() => {
+      const cached = workspaceBootstrapCache.get(roomKey);
+      return cached ? { roomKey, snapshot: cached } : null;
+    });
+    const contextRef = useRef({ initialCode, workspaceCode, onChange });
+    useEffect(() => {
+      contextRef.current = { initialCode, workspaceCode, onChange };
+    }, [initialCode, onChange, workspaceCode]);
 
     useEffect(() => {
       let cancelled = false;
+      const cached = workspaceBootstrapCache.get(roomKey);
 
-      const loadWorkspace = async () => {
-        setIsReady(false);
-        try {
-          const response = await classroomService.loadWorkspace({
-            sessionId,
-            taskId,
-            studentId: role === "teacher" ? workspaceStudentId : undefined,
-          });
+      if (cached) {
+        setWorkspaceBootstrap({ roomKey, snapshot: cached });
+        contextRef.current.onChange?.(cached.code);
+        return () => {
+          cancelled = true;
+        };
+      }
+
+      setWorkspaceBootstrap(null);
+
+      void resolveWorkspaceBootstrap({
+        roomKey,
+        sessionId,
+        taskId,
+        workspaceStudentId,
+        role,
+        fallbackCode: contextRef.current.workspaceCode ?? contextRef.current.initialCode,
+      })
+        .then((snapshot) => {
+          if (cancelled) {
+            return;
+          }
+
+          setWorkspaceBootstrap({ roomKey, snapshot });
+          contextRef.current.onChange?.(snapshot.code);
+        })
+        .catch((error: Error & { snapshot?: WorkspaceBootstrap }) => {
+          console.error("[CollaborativeEditor] Failed to load workspace", error);
 
           if (cancelled) {
             return;
           }
 
-          const resolvedCode = response.code ?? initialCode ?? starterCode;
-          setWorkspaceCode(resolvedCode);
-          setWorkspaceRevision(response.revision ?? 0);
-          onChange?.(resolvedCode);
-        } catch (error) {
-          console.error("[CollaborativeEditor] Failed to load workspace", error);
-          if (!cancelled) {
-            const fallbackCode = initialCode ?? starterCode;
-            setWorkspaceCode(fallbackCode);
-            setWorkspaceRevision(0);
-            onChange?.(fallbackCode);
-          }
-        } finally {
-          if (!cancelled) {
-            setIsReady(true);
-          }
-        }
-      };
-
-      loadWorkspace();
+          const fallbackSnapshot = error.snapshot ?? {
+            code: contextRef.current.workspaceCode ?? contextRef.current.initialCode ?? "",
+            revision: 0,
+          };
+          primeWorkspaceBootstrap(roomKey, fallbackSnapshot);
+          setWorkspaceBootstrap({ roomKey, snapshot: fallbackSnapshot });
+          contextRef.current.onChange?.(fallbackSnapshot.code);
+        });
 
       return () => {
         cancelled = true;
       };
-    }, [initialCode, onChange, role, sessionId, taskId, workspaceStudentId]);
+    }, [roomKey, role, sessionId, taskId, workspaceStudentId]);
 
-    if (!isReady) {
+    if (!workspaceBootstrap || workspaceBootstrap.roomKey !== roomKey) {
       return (
-        <div className="flex h-full flex-col items-center justify-center gap-4 bg-[#fafafa] text-[#11110f]">
-          <Loader2 className="h-8 w-8 animate-spin text-[#ccff00]" />
-          <span className="text-sm font-bold uppercase tracking-widest text-[#11110f]">
-            Loading workspace...
-          </span>
-        </div>
+        role === "student" ? (
+          <ClassroomLoader compact message="Loading workspace..." />
+        ) : (
+          <div className="flex h-full flex-col items-center justify-center gap-4 bg-[#fafafa] text-[#11110f]">
+            <Loader2 className="h-8 w-8 animate-spin text-[#ccff00]" />
+            <span className="text-sm font-bold uppercase tracking-widest text-[#11110f]">
+              Loading workspace...
+            </span>
+          </div>
+        )
       );
     }
 
     return (
       <EditorRoomProvider
+        key={roomKey}
         id={buildEditorRoomId(sessionId, workspaceStudentId, taskId)}
         initialPresence={{
           cursor: null,
@@ -225,19 +334,23 @@ const WorkspaceLoader = forwardRef<CollaborativeEditorHandle, CollaborativeEdito
           workspaceStudentId,
         }}
         initialStorage={{
-          code: workspaceCode,
-          revision: workspaceRevision,
+          code: "",
+          revision: workspaceBootstrap.snapshot.revision,
           teacherJoinedMessage: null,
         }}
       >
         <ClientSideSuspense
           fallback={
-            <div className="flex h-full flex-col items-center justify-center gap-4 bg-[#fafafa] text-[#11110f]">
-              <Loader2 className="h-8 w-8 animate-spin text-[#ccff00]" />
-              <span className="text-sm font-bold uppercase tracking-widest text-[#11110f]">
-                Connecting to task room...
-              </span>
-            </div>
+            role === "student" ? (
+              <ClassroomLoader compact message="Connecting to task room..." />
+            ) : (
+              <div className="flex h-full flex-col items-center justify-center gap-4 bg-[#fafafa] text-[#11110f]">
+                <Loader2 className="h-8 w-8 animate-spin text-[#ccff00]" />
+                <span className="text-sm font-bold uppercase tracking-widest text-[#11110f]">
+                  Connecting to task room...
+                </span>
+              </div>
+            )
           }
         >
           {() => (
@@ -248,6 +361,8 @@ const WorkspaceLoader = forwardRef<CollaborativeEditorHandle, CollaborativeEdito
               workspaceStudentId={workspaceStudentId}
               currentUserId={currentUserId}
               userName={userName}
+              initialCode={initialCode}
+              workspaceCode={workspaceBootstrap.snapshot.code}
               language={language}
               role={role}
               mode={mode}
@@ -267,7 +382,7 @@ const WorkspaceLoader = forwardRef<CollaborativeEditorHandle, CollaborativeEdito
 
 const EditorInstance = forwardRef<
   CollaborativeEditorHandle,
-  Omit<CollaborativeEditorProps, "initialCode">
+  CollaborativeEditorProps
 >(function EditorInstance(
   {
     sessionId,
@@ -275,6 +390,8 @@ const EditorInstance = forwardRef<
     workspaceStudentId,
     currentUserId,
     userName,
+    initialCode,
+    workspaceCode,
     language = "python",
     role = "student",
     mode = role === "teacher" ? "view" : undefined,
@@ -287,24 +404,15 @@ const EditorInstance = forwardRef<
   },
   ref,
 ) {
-  const liveCode = useEditorStorage((root) => root.code);
-  const liveRevision = useEditorStorage((root) => root.revision);
+  const room = useEditorRoom();
   const others = useEditorOthers();
   const editorStatus = useEditorStatus();
   const broadcast = useEditorBroadcastEvent();
   const [, updateMyPresence] = useEditorMyPresence();
-  const updateCode = useEditorMutation(({ storage }, nextCode: string) => {
-    storage.set("code", nextCode);
-  }, []);
-  const updateRevision = useEditorMutation(({ storage }, nextRevision: number) => {
-    storage.set("revision", nextRevision);
-  }, []);
-  const updateTeacherJoinedMessage = useEditorMutation(
-    ({ storage }, message: string | null) => {
-      storage.set("teacherJoinedMessage", message);
-    },
-    [],
-  );
+  const roomKey = `${sessionId}:${workspaceStudentId}:${taskId}`;
+  const canWrite = role === "teacher" ? mode === "edit" && !readOnly : !readOnly;
+  const isEditorReadOnly =
+    role === "teacher" ? mode !== "edit" || Boolean(readOnly) : Boolean(readOnly);
 
   const [teacherNotice, setTeacherNotice] = useState<string | null>(null);
   const [interventions, setInterventions] = useState<EditorIntervention[]>([]);
@@ -313,89 +421,58 @@ const EditorInstance = forwardRef<
   const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
   const decorationIdsRef = useRef<string[]>([]);
   const saveTimerRef = useRef<number | null>(null);
-  const hasPendingLiveSyncRef = useRef(false);
   const isRoomConnectedRef = useRef(false);
-  const [localCode, setLocalCode] = useState(liveCode ?? starterCode);
-  const [localRevision, setLocalRevision] = useState(liveRevision ?? 0);
+  const latestCodeRef = useRef(workspaceCode ?? initialCode ?? "");
+  const persistContextRef = useRef({
+    canWrite,
+    sessionId,
+    taskId,
+    workspaceStudentId,
+    role,
+  });
+  
+  const yDocRef = useRef<Y.Doc | null>(null);
+  const yTextRef = useRef<Y.Text | null>(null);
+  const providerRef = useRef<LiveblocksYjsProvider | null>(null);
+  const bindingRef = useRef<MonacoBinding | null>(null);
+  const announcedTeacherModeRef = useRef<TeacherFocusMode | null>(null);
 
-  const canWrite = role === "teacher" ? mode === "edit" && !readOnly : !readOnly;
+  const callbacksRef = useRef({ onChange, onSnippetChange, onTeacherPresenceChange });
+  useEffect(() => {
+    callbacksRef.current = { onChange, onSnippetChange, onTeacherPresenceChange };
+  }, [onChange, onSnippetChange, onTeacherPresenceChange]);
   const isRoomConnected = editorStatus === "connected";
-  const code = localCode;
-  const revision = localRevision;
   const fileName =
     language === "javascript"
       ? "main.js"
       : language === "typescript"
         ? "main.ts"
         : "main.py";
+  const modelPath = `${buildEditorRoomId(sessionId, workspaceStudentId, taskId)}/${fileName}`;
 
   useEffect(() => {
     isRoomConnectedRef.current = isRoomConnected;
   }, [isRoomConnected]);
 
   useEffect(() => {
-    if (typeof liveCode !== "string") {
-      return;
-    }
-
-    if (hasPendingLiveSyncRef.current && liveCode !== localCode) {
-      return;
-    }
-
-    setLocalCode(liveCode);
-  }, [liveCode, localCode]);
+    latestCodeRef.current = workspaceCode ?? initialCode ?? "";
+  }, [initialCode, workspaceCode]);
 
   useEffect(() => {
-    if (typeof liveRevision !== "number") {
-      return;
-    }
-
-    if (hasPendingLiveSyncRef.current && liveRevision !== localRevision) {
-      return;
-    }
-
-    setLocalRevision(liveRevision);
-  }, [liveRevision, localRevision]);
-
-  const runConnectedMutation = (
-    label: string,
-    mutate: () => void,
-    options?: { pendingSync?: boolean },
-  ) => {
-    if (!isRoomConnectedRef.current) {
-      if (options?.pendingSync) {
-        hasPendingLiveSyncRef.current = true;
-      }
-      return;
-    }
-
-    try {
-      mutate();
-      if (options?.pendingSync) {
-        hasPendingLiveSyncRef.current = false;
-      }
-    } catch (error) {
-      console.warn(`[CollaborativeEditor] Skipped ${label} because the room is unavailable`, error);
-      if (options?.pendingSync) {
-        hasPendingLiveSyncRef.current = true;
-      }
-    }
-  };
+    persistContextRef.current = {
+      canWrite,
+      sessionId,
+      taskId,
+      workspaceStudentId,
+      role,
+    };
+  }, [canWrite, role, sessionId, taskId, workspaceStudentId]);
 
   useEffect(() => {
-    if (!isRoomConnected || !hasPendingLiveSyncRef.current) {
-      return;
-    }
-
-    runConnectedMutation(
-      "workspace sync",
-      () => {
-        updateCode(localCode);
-        updateRevision(localRevision);
-      },
-      { pendingSync: true },
-    );
-  }, [isRoomConnected, localCode, localRevision, updateCode, updateRevision]);
+    editorRef.current?.updateOptions({
+      readOnly: isEditorReadOnly,
+    });
+  }, [isEditorReadOnly]);
 
   const loadInterventions = async () => {
     setInterventionsLoading(true);
@@ -429,26 +506,28 @@ const EditorInstance = forwardRef<
           endColumn: selection.endColumn,
         };
       },
-      getCode: () => code,
-      getRevision: () => revision,
+      getCode: () => yTextRef.current?.toString() ?? "",
+      getRevision: () => 0,
       refreshInterventions: loadInterventions,
       notifyInterventionsChanged: () => {
-        runConnectedMutation("intervention broadcast", () => {
-          broadcast({ type: "interventions-updated" });
-        });
+        if (isRoomConnectedRef.current) {
+           broadcast({ type: "interventions-updated" });
+        }
         void loadInterventions();
       },
       replaceCode: (nextCode: string) => {
-        setLocalCode(nextCode);
-        onChange?.(nextCode);
-        onSnippetChange?.(nextCode);
-        runConnectedMutation("code update", () => {
-          updateCode(nextCode);
-        }, { pendingSync: true });
+        if (yTextRef.current) {
+           yTextRef.current.delete(0, yTextRef.current.length);
+           yTextRef.current.insert(0, nextCode);
+        }
+        latestCodeRef.current = nextCode;
+        primeWorkspaceBootstrap(roomKey, { code: nextCode });
+        callbacksRef.current.onChange?.(nextCode);
+        callbacksRef.current.onSnippetChange?.(nextCode);
         persistWorkspace(nextCode);
       },
     }),
-    [broadcast, code, onChange, onSnippetChange, revision],
+    [broadcast],
   );
 
   useEffect(() => {
@@ -460,41 +539,60 @@ const EditorInstance = forwardRef<
       return;
     }
 
-    const message = `Teacher joined in ${mode ?? "view"} mode`;
+    const nextMode = mode ?? "view";
+    const previousMode = announcedTeacherModeRef.current;
+    const message =
+      previousMode === null
+        ? `Teacher joined in ${nextMode} mode`
+        : `Teacher switched to ${nextMode} mode`;
+
     setTeacherNotice(message);
-    runConnectedMutation("teacher presence sync", () => {
-      updateTeacherJoinedMessage(message);
-    });
-    onTeacherPresenceChange?.(message);
-    runConnectedMutation("teacher joined broadcast", () => {
-      broadcast({
-        type: "teacher-joined",
-        teacherName: userName,
-        mode: mode ?? "view",
-      });
-    });
+    callbacksRef.current.onTeacherPresenceChange?.(message);
+
+    if (isRoomConnectedRef.current) {
+      if (previousMode === null) {
+        broadcast({
+          type: "teacher-joined",
+          teacherName: userName,
+          mode: nextMode,
+        });
+      } else {
+        broadcast({
+          type: "teacher-mode",
+          mode: nextMode,
+        });
+      }
+    }
+
+    announcedTeacherModeRef.current = nextMode;
   }, [
     announceTeacherPresence,
     broadcast,
     mode,
-    onTeacherPresenceChange,
     role,
-    updateTeacherJoinedMessage,
     userName,
   ]);
+
+  useEffect(
+    () => () => {
+      announcedTeacherModeRef.current = null;
+      callbacksRef.current.onTeacherPresenceChange?.(null);
+    },
+    [],
+  );
 
   useEditorEventListener(({ event }) => {
     if (event.type === "teacher-joined") {
       const message = `${event.teacherName} joined in ${event.mode} mode`;
       setTeacherNotice(message);
-      onTeacherPresenceChange?.(message);
+      callbacksRef.current.onTeacherPresenceChange?.(message);
       return;
     }
 
     if (event.type === "teacher-mode") {
       const message = `Teacher switched to ${event.mode} mode`;
       setTeacherNotice(message);
-      onTeacherPresenceChange?.(message);
+      callbacksRef.current.onTeacherPresenceChange?.(message);
       return;
     }
 
@@ -540,14 +638,26 @@ const EditorInstance = forwardRef<
     );
   }, [interventions]);
 
-  useEffect(
-    () => () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-      }
-    },
-    [],
-  );
+  const saveWorkspaceNow = async (nextCode: string) => {
+    if (!persistContextRef.current.canWrite) {
+      return;
+    }
+
+    const response = await classroomService.saveWorkspace({
+      sessionId: persistContextRef.current.sessionId,
+      taskId: persistContextRef.current.taskId,
+      studentId:
+        persistContextRef.current.role === "teacher"
+          ? persistContextRef.current.workspaceStudentId
+          : undefined,
+      code: nextCode,
+    });
+
+    primeWorkspaceBootstrap(roomKey, {
+      code: nextCode,
+      revision: response.revision,
+    });
+  };
 
   const persistWorkspace = (nextCode: string) => {
     if (!canWrite) {
@@ -560,31 +670,60 @@ const EditorInstance = forwardRef<
 
     saveTimerRef.current = window.setTimeout(async () => {
       try {
-        const response = await classroomService.saveWorkspace({
-          sessionId,
-          taskId,
-          studentId: role === "teacher" ? workspaceStudentId : undefined,
-          code: nextCode,
-        });
-
-        setLocalRevision(response.revision);
-        runConnectedMutation(
-          "revision sync",
-          () => {
-            updateRevision(response.revision);
-            broadcast({ type: "code-saved", revision: response.revision });
-          },
-          { pendingSync: true },
-        );
+        await saveWorkspaceNow(nextCode);
       } catch (error) {
         console.error("[CollaborativeEditor] Failed to save workspace", error);
       }
     }, 900);
   };
 
+  const initYjs = (editor: MonacoEditor.IStandaloneCodeEditor) => {
+    if (!room || yDocRef.current) return;
+
+    yDocRef.current = new Y.Doc();
+    yTextRef.current = yDocRef.current.getText("monaco");
+
+    providerRef.current = new LiveblocksYjsProvider(room, yDocRef.current);
+
+    let isInitialized = false;
+    const seedCode = workspaceCode ?? initialCode ?? "";
+
+    providerRef.current.on("sync", (isSynced: boolean) => {
+      if (isSynced && yTextRef.current && !isInitialized) {
+        isInitialized = true;
+
+        if (yTextRef.current.length === 0 && seedCode.length > 0) {
+          yTextRef.current.insert(0, seedCode);
+        }
+
+        const syncedCode = yTextRef.current.toString();
+        latestCodeRef.current = syncedCode;
+        primeWorkspaceBootstrap(roomKey, {
+          code: syncedCode,
+        });
+        callbacksRef.current.onChange?.(syncedCode);
+      }
+    });
+
+    bindingRef.current = new MonacoBinding(
+      yTextRef.current,
+      editor.getModel()!,
+      new Set([editor]),
+      toMonacoAwareness(providerRef.current)
+    );
+    
+    // Configure Yjs Awareness for teacher
+    providerRef.current.awareness.setLocalStateField("user", {
+        name: userName,
+        color: role === "teacher" ? "#ccff00" : "#3b82f6",
+        colorLight: role === "teacher" ? "rgba(204, 255, 0, 0.2)" : "rgba(59, 130, 246, 0.2)"
+    });
+  };
+
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
     monacoRef.current = monaco;
+    initYjs(editor);
 
     editor.onDidChangeCursorPosition((event) => {
       if (!isRoomConnectedRef.current) {
@@ -614,18 +753,50 @@ const EditorInstance = forwardRef<
         console.warn("[CollaborativeEditor] Failed to sync presence", error);
       }
     });
+    
+    editor.onDidChangeModelContent(() => {
+      const value = editor.getValue();
+      latestCodeRef.current = value;
+      primeWorkspaceBootstrap(roomKey, { code: value });
+      callbacksRef.current.onChange?.(value);
+
+      if (!persistContextRef.current.canWrite || !editor.hasTextFocus()) {
+        return;
+      }
+
+      callbacksRef.current.onSnippetChange?.(value);
+      persistWorkspace(value);
+    });
   };
 
-  const handleLocalChange = (value?: string) => {
-    const nextCode = value ?? "";
-    setLocalCode(nextCode);
-    onChange?.(nextCode);
-    onSnippetChange?.(nextCode);
-    runConnectedMutation("code update", () => {
-      updateCode(nextCode);
-    }, { pendingSync: true });
-    persistWorkspace(nextCode);
-  };
+  useEffect(() => {
+    return () => {
+      if (bindingRef.current) {
+        bindingRef.current.destroy();
+        bindingRef.current = null;
+      }
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+        if (persistContextRef.current.canWrite) {
+          void saveWorkspaceNow(latestCodeRef.current).catch((error) => {
+            console.error("[CollaborativeEditor] Failed to flush workspace on unmount", error);
+          });
+        }
+      }
+      if (providerRef.current) {
+        providerRef.current.destroy();
+        providerRef.current = null;
+      }
+      if (yDocRef.current) {
+        yDocRef.current.destroy();
+        yDocRef.current = null;
+      }
+      yTextRef.current = null;
+      editorRef.current = null;
+      monacoRef.current = null;
+    };
+  }, []);
 
   const handleSuggestionStatus = async (
     intervention: EditorIntervention,
@@ -639,19 +810,19 @@ const EditorInstance = forwardRef<
         acceptedCode,
       );
 
-      if (status === "accepted" && acceptedCode) {
-        setLocalCode(acceptedCode);
-        onChange?.(acceptedCode);
-        onSnippetChange?.(acceptedCode);
-        runConnectedMutation("accepted suggestion sync", () => {
-          updateCode(acceptedCode);
-        }, { pendingSync: true });
+      if (status === "accepted" && acceptedCode && yTextRef.current) {
+        yTextRef.current.delete(0, yTextRef.current.length);
+        yTextRef.current.insert(0, acceptedCode);
+        latestCodeRef.current = acceptedCode;
+        primeWorkspaceBootstrap(roomKey, { code: acceptedCode });
+        callbacksRef.current.onChange?.(acceptedCode);
+        callbacksRef.current.onSnippetChange?.(acceptedCode);
         persistWorkspace(acceptedCode);
       }
 
-      runConnectedMutation("intervention refresh broadcast", () => {
+      if (isRoomConnectedRef.current) {
         broadcast({ type: "interventions-updated" });
-      });
+      }
       await loadInterventions();
     } catch (error) {
       console.error("[CollaborativeEditor] Failed to update intervention", error);
@@ -773,13 +944,12 @@ const EditorInstance = forwardRef<
       <div className="flex-1">
         <Editor
           height="100%"
+          path={modelPath}
           language={language}
-          value={code}
-          onChange={handleLocalChange}
           onMount={handleEditorMount}
           theme="vs"
           options={{
-            readOnly: role === "teacher" ? mode !== "edit" || readOnly : readOnly,
+            readOnly: isEditorReadOnly,
             minimap: { enabled: false },
             fontSize: 14,
             lineNumbersMinChars: 4,

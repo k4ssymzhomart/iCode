@@ -1,31 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
-
-const EXECUTION_TIMEOUT_MS = 8000;
-
-const PYTHON_CANDIDATES = (() => {
-  const configured = process.env.PYTHON_BIN?.trim();
-  const candidates = configured
-    ? [{ command: configured, args: [] as string[] }]
-    : [];
-
-  if (process.platform === "win32") {
-    return [
-      ...candidates,
-      { command: "py", args: ["-3"] },
-      { command: "python", args: [] as string[] },
-      { command: "python3", args: [] as string[] },
-    ];
-  }
-
-  return [
-    ...candidates,
-    { command: "python3", args: [] as string[] },
-    { command: "python", args: [] as string[] },
-  ];
-})();
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 type PythonExecutionResult =
   | {
@@ -36,6 +12,46 @@ type PythonExecutionResult =
       success: false;
       formattedError: string;
     };
+
+type LocalPythonExecutionResult =
+  | {
+      success: true;
+      stdout: string;
+    }
+  | {
+      success: false;
+      formattedError?: string;
+      runtimeAvailable: boolean;
+    };
+
+interface PistonExecutionResponse {
+  run: {
+    stdout: string;
+    stderr: string;
+    code: number;
+    signal: string | null;
+    output: string;
+  };
+  compile?: {
+    stdout: string;
+    stderr: string;
+    code: number;
+  };
+  message?: string;
+}
+
+type PythonCommand = {
+  command: string;
+  args: string[];
+};
+
+const PISTON_ENDPOINT = "https://emkc.org/api/v2/piston/execute";
+const SCRIPT_NAME = "main.py";
+const PYTHON_TIMEOUT_MS = 8000;
+const PYTHON_COMPILE_TIMEOUT_MS = 10000;
+const PYTHON_RUNTIME_UNAVAILABLE = "Line ?: Python runtime is unavailable";
+
+let cachedPythonCommand: PythonCommand | null | undefined;
 
 const normalizeOutput = (value: string) => value.replace(/\r\n/g, "\n");
 
@@ -127,7 +143,7 @@ const buildConciseExplanation = (errorType: string, rawMessage: string) => {
 const extractRelevantLineNumbers = (stderr: string, scriptPath: string) => {
   const lines = normalizeOutput(stderr).split("\n");
   const matches = new Set<number>();
-  const scriptName = path.basename(scriptPath);
+  const scriptName = scriptPath.split(/[\\/]/).pop() ?? scriptPath;
 
   for (const line of lines) {
     if (!line.includes(scriptPath) && !line.includes(scriptName)) {
@@ -180,130 +196,257 @@ const formatPythonError = (stderr: string, scriptPath: string) => {
   return `Lines ${lineNumbers.join(", ")}: ${explanation}`;
 };
 
-const executePythonFile = async (
+const getPythonCommandCandidates = (): PythonCommand[] => {
+  if (process.platform === "win32") {
+    return [
+      { command: "py", args: ["-3"] },
+      { command: "python3", args: [] },
+      { command: "python", args: [] },
+    ];
+  }
+
+  return [
+    { command: "python3", args: [] },
+    { command: "python", args: [] },
+  ];
+};
+
+const runCommand = (
   command: string,
   args: string[],
-  scriptPath: string,
-  stdin: string,
+  options?: {
+    cwd?: string;
+    stdin?: string;
+    timeoutMs?: number;
+  },
 ) =>
   new Promise<{
-    exitCode: number | null;
+    code: number | null;
+    signal: NodeJS.Signals | null;
     stdout: string;
     stderr: string;
     timedOut: boolean;
   }>((resolve, reject) => {
-    const child = spawn(command, [...args, "-I", scriptPath], {
+    const child = spawn(command, args, {
+      cwd: options?.cwd,
       windowsHide: true,
       stdio: "pipe",
     });
 
     let stdout = "";
     let stderr = "";
-    let settled = false;
     let timedOut = false;
+    const timer =
+      options?.timeoutMs && options.timeoutMs > 0
+        ? setTimeout(() => {
+            timedOut = true;
+            child.kill();
+          }, options.timeoutMs)
+        : null;
 
-    const finalize = (payload: {
-      exitCode: number | null;
-      stdout: string;
-      stderr: string;
-      timedOut: boolean;
-    }) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve(payload);
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, EXECUTION_TIMEOUT_MS);
-
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      stdout += chunk.toString();
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
     });
 
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      stderr += chunk.toString();
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
     });
 
     child.on("error", (error) => {
-      clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
       reject(error);
     });
 
-    child.on("close", (exitCode) => {
-      clearTimeout(timer);
-      finalize({
-        exitCode,
+    child.on("close", (code, signal) => {
+      if (timer) {
+        clearTimeout(timer);
+      }
+
+      resolve({
+        code,
+        signal,
         stdout: normalizeOutput(stdout),
         stderr: normalizeOutput(stderr),
         timedOut,
       });
     });
 
-    child.stdin.write(stdin);
+    if (typeof options?.stdin === "string") {
+      child.stdin.write(options.stdin);
+    }
+
     child.stdin.end();
   });
+
+const resolveLocalPythonCommand = async (): Promise<PythonCommand | null> => {
+  if (cachedPythonCommand !== undefined) {
+    return cachedPythonCommand;
+  }
+
+  for (const candidate of getPythonCommandCandidates()) {
+    try {
+      const result = await runCommand(candidate.command, [...candidate.args, "--version"], {
+        timeoutMs: 2000,
+      });
+
+      if (result.code === 0) {
+        cachedPythonCommand = candidate;
+        return candidate;
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  cachedPythonCommand = null;
+  return null;
+};
+
+const runLocalPythonSource = async (
+  sourceCode: string,
+  stdin = "",
+): Promise<LocalPythonExecutionResult> => {
+  const pythonCommand = await resolveLocalPythonCommand();
+  if (!pythonCommand) {
+    return {
+      success: false,
+      runtimeAvailable: false,
+    };
+  }
+
+  const tempDir = await mkdtemp(join(tmpdir(), "icode-python-"));
+  const scriptPath = join(tempDir, SCRIPT_NAME);
+
+  try {
+    await writeFile(scriptPath, sourceCode, "utf8");
+    const result = await runCommand(
+      pythonCommand.command,
+      [...pythonCommand.args, scriptPath],
+      {
+        cwd: tempDir,
+        stdin,
+        timeoutMs: PYTHON_TIMEOUT_MS,
+      },
+    );
+
+    if (result.timedOut) {
+      return {
+        success: false,
+        runtimeAvailable: true,
+        formattedError: "Line ?: execution timed out",
+      };
+    }
+
+    if (result.code === 0 && !result.stderr) {
+      return {
+        success: true,
+        stdout: result.stdout,
+      };
+    }
+
+    return {
+      success: false,
+      runtimeAvailable: true,
+      formattedError: formatPythonError(result.stderr || result.stdout, scriptPath),
+    };
+  } catch (error) {
+    console.error("[pythonRunner] Local Python execution error:", error);
+    cachedPythonCommand = null;
+    return {
+      success: false,
+      runtimeAvailable: false,
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+};
+
+const runLocalFallback = async (
+  sourceCode: string,
+  stdin = "",
+): Promise<PythonExecutionResult> => {
+  const fallback = await runLocalPythonSource(sourceCode, stdin);
+
+  if (fallback.success) {
+    return fallback;
+  }
+
+  if ("runtimeAvailable" in fallback && fallback.runtimeAvailable && fallback.formattedError) {
+    return {
+      success: false,
+      formattedError: fallback.formattedError,
+    };
+  }
+
+  return {
+    success: false,
+    formattedError: PYTHON_RUNTIME_UNAVAILABLE,
+  };
+};
 
 export const runPythonSource = async (
   sourceCode: string,
   stdin = "",
 ): Promise<PythonExecutionResult> => {
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "icode-python-"));
-  const scriptPath = path.join(tempDir, "main.py");
-
   try {
-    await writeFile(scriptPath, sourceCode, "utf8");
-    for (const candidate of PYTHON_CANDIDATES) {
-      try {
-        const execution = await executePythonFile(
-          candidate.command,
-          candidate.args,
-          scriptPath,
-          stdin,
-        );
+    const response = await fetch(PISTON_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        language: "python",
+        version: "3.10.0",
+        files: [
+          {
+            name: SCRIPT_NAME,
+            content: sourceCode,
+          },
+        ],
+        stdin,
+        compile_timeout: PYTHON_COMPILE_TIMEOUT_MS,
+        run_timeout: PYTHON_TIMEOUT_MS,
+      }),
+    });
 
-        if (/Python was not found|No Python/i.test(execution.stderr)) {
-          continue;
-        }
+    if (!response.ok) {
+      console.warn("[pythonRunner] Piston returned a non-OK response:", response.status);
+      return runLocalFallback(sourceCode, stdin);
+    }
 
-        if (execution.timedOut) {
-          return {
-            success: false,
-            formattedError: "Line ?: execution timed out",
-          };
-        }
+    const data = (await response.json()) as PistonExecutionResponse;
 
-        if (execution.exitCode === 0) {
-          return {
-            success: true,
-            stdout: execution.stdout,
-          };
-        }
+    if (data.message) {
+      console.warn("[pythonRunner] Piston returned an API-level error:", data.message);
+      return runLocalFallback(sourceCode, stdin);
+    }
 
-        return {
-          success: false,
-          formattedError: formatPythonError(execution.stderr, scriptPath),
-        };
-      } catch (error) {
-        const code =
-          error && typeof error === "object" && "code" in error
-            ? String((error as { code?: unknown }).code ?? "")
-            : "";
-        if (code === "ENOENT") {
-          continue;
-        }
-        throw error;
-      }
+    const executeStream = data.run;
+    if (executeStream.code === 0 && !executeStream.stderr) {
+      return {
+        success: true,
+        stdout: executeStream.stdout || executeStream.output || "",
+      };
+    }
+
+    if (executeStream.signal === "SIGKILL") {
+      return {
+        success: false,
+        formattedError: "Line ?: execution timed out",
+      };
     }
 
     return {
       success: false,
-      formattedError: "Line ?: Python runtime is unavailable",
+      formattedError: formatPythonError(
+        executeStream.stderr || executeStream.output,
+        SCRIPT_NAME,
+      ),
     };
-  } finally {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  } catch (error) {
+    console.error("[pythonRunner] Piston execution error:", error);
+    return runLocalFallback(sourceCode, stdin);
   }
 };

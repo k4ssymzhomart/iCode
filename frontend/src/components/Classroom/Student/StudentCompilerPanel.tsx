@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { Activity, Play, RefreshCcw, SearchCode, ShieldAlert, Zap } from "lucide-react";
 import type { CompilerActionResponse, CompilerResponseSection } from "@shared/compiler";
 import type { SessionConfig, Task } from "@shared/types";
@@ -11,6 +11,16 @@ interface ExecState {
   error?: string;
 }
 
+export interface StudentCompilerPanelState {
+  execState: ExecState;
+  latestOutputLog: string;
+}
+
+export const createEmptyStudentCompilerPanelState = (): StudentCompilerPanelState => ({
+  execState: { status: "idle" },
+  latestOutputLog: "",
+});
+
 interface StudentCompilerPanelProps {
   code: string;
   sessionId: string;
@@ -19,6 +29,8 @@ interface StudentCompilerPanelProps {
   config: SessionConfig | null;
   broadcastMessage?: string | null;
   pinnedHint?: string | null;
+  panelState: StudentCompilerPanelState;
+  onPanelStateChange: (state: StudentCompilerPanelState) => void;
 }
 
 const renderSection = (section: CompilerResponseSection) => {
@@ -51,18 +63,15 @@ const StudentCompilerPanel: React.FC<StudentCompilerPanelProps> = ({
   taskId,
   task,
   config,
+  panelState,
+  onPanelStateChange,
 }) => {
-  const [execState, setExecState] = useState<ExecState>({ status: "idle" });
-  const [latestOutputLog, setLatestOutputLog] = useState("");
+  const execState = panelState.execState;
+  const latestOutputLog = panelState.latestOutputLog;
 
   const allowRun = config?.allowRun !== false;
   const allowExplain = config?.allowExplain !== false;
   const allowCorrect = config?.allowCorrect !== false;
-
-  useEffect(() => {
-    setExecState({ status: "idle" });
-    setLatestOutputLog("");
-  }, [task.id]);
 
   const requestCompiler = async (
     action: "run" | "correct" | "explain",
@@ -99,32 +108,38 @@ const StudentCompilerPanel: React.FC<StudentCompilerPanelProps> = ({
   };
 
   const runAction = async (action: "run" | "correct" | "explain") => {
-    setExecState({ status: "running", action });
+    onPanelStateChange({
+      ...panelState,
+      execState: { status: "running", action },
+    });
 
     try {
       const response = await requestCompiler(action);
 
-      if (action === "run") {
-        setLatestOutputLog(response.content ?? "");
-      }
+      const nextOutputLog = action === "run" ? response.content ?? "" : latestOutputLog;
 
-      setExecState({
-        status: "done",
-        action,
-        response,
+      onPanelStateChange({
+        execState: {
+          status: "done",
+          action,
+          response,
+        },
+        latestOutputLog: nextOutputLog,
       });
     } catch (error) {
-      setExecState({
-        status: "done",
-        action,
-        error: error instanceof Error ? error.message : "Request failed.",
+      onPanelStateChange({
+        ...panelState,
+        execState: {
+          status: "done",
+          action,
+          error: error instanceof Error ? error.message : "Request failed.",
+        },
       });
     }
   };
 
   const retryClean = () => {
-    setExecState({ status: "idle" });
-    setLatestOutputLog("");
+    onPanelStateChange(createEmptyStudentCompilerPanelState());
   };
 
   const runningLabel =

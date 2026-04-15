@@ -89,9 +89,14 @@ const TeacherSessionPage = ({
         session={session}
         student={student}
         onExit={() => navigate(appPaths.teacher)}
-        onResolveHelp={async () => {
-          await classroomService.resolveHelpRequest(session.id, student.studentId);
+        onResolveHelp={async ({ taskId, responseNotes }) => {
+          const response = await classroomService.resolveHelpRequest(session.id, {
+            studentId: student.studentId,
+            taskId,
+            responseNotes,
+          });
           await loadFocusSession();
+          return response.response;
         }}
         onResetCode={async () => {
           if (!student.currentTaskId) {

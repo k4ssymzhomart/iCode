@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import {
   EditorIntervention,
   HelpRequest,
+  ResolvedHelpResponse,
   SessionControls,
   SessionStudent,
   SessionState,
   SessionTask,
   StudentOverview,
   Task,
+  TeacherHelpNote,
   TaskSetDetail,
   TaskSetSourceType,
   TaskSetSummary,
@@ -132,6 +134,8 @@ const validTaskSetSourceTypes = new Set<TaskSetSourceType>([
   "json_import",
   "legacy_single_task",
 ]);
+
+const HELP_RESPONSE_INTERVENTION_PREFIX = "__icode_help_response__:";
 
 const toSessionState = (value: unknown): SessionState => {
   if (typeof value === "string" && validSessionStates.has(value as SessionState)) {
@@ -320,6 +324,89 @@ const mapHelpRequestRow = (row: any): HelpRequest => ({
   requestedAt: row.requested_at,
   resolvedAt: row.resolved_at ?? undefined,
 });
+
+const normalizeTeacherHelpNotes = (value: unknown): TeacherHelpNote[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const note = entry as Record<string, unknown>;
+    const text = typeof note.text === "string" ? note.text.trim() : "";
+    if (!text) {
+      return [];
+    }
+
+    return [
+      {
+        id:
+          typeof note.id === "string" && note.id.trim()
+            ? note.id
+            : randomUUID(),
+        sender: "teacher",
+        text,
+        createdAt:
+          typeof note.createdAt === "string" && note.createdAt.trim()
+            ? note.createdAt
+            : new Date().toISOString(),
+      } satisfies TeacherHelpNote,
+    ];
+  });
+};
+
+export const toTeacherHelpNotes = (value: unknown) => normalizeTeacherHelpNotes(value);
+
+const encodeLegacyHelpResponseNotes = (notes: TeacherHelpNote[]) =>
+  `${HELP_RESPONSE_INTERVENTION_PREFIX}${JSON.stringify(notes)}`;
+
+const decodeLegacyHelpResponseNotes = (value: unknown) => {
+  if (typeof value !== "string" || !value.startsWith(HELP_RESPONSE_INTERVENTION_PREFIX)) {
+    return [];
+  }
+
+  try {
+    return normalizeTeacherHelpNotes(
+      JSON.parse(value.slice(HELP_RESPONSE_INTERVENTION_PREFIX.length)),
+    );
+  } catch {
+    return [];
+  }
+};
+
+export const isMissingHelpResponseColumnsError = (error: { message?: string; details?: string; hint?: string } | null | undefined) => {
+  const text = [error?.message, error?.details, error?.hint].filter(Boolean).join(" ");
+  return /resolution_notes|resolved_by_teacher_id/i.test(text);
+};
+
+export const toResolvedHelpResponse = (row: any): ResolvedHelpResponse | null => {
+  if (!row?.id || !row?.task_id || !row?.resolved_at) {
+    return null;
+  }
+
+  return {
+    requestId: row.id,
+    taskId: row.task_id,
+    resolvedAt: row.resolved_at,
+    notes: normalizeTeacherHelpNotes(row.resolution_notes),
+  };
+};
+
+const toLegacyResolvedHelpResponse = (row: any): ResolvedHelpResponse | null => {
+  if (!row?.id || !row?.task_id || !row?.resolved_at) {
+    return null;
+  }
+
+  return {
+    requestId: row.id,
+    taskId: row.task_id,
+    resolvedAt: row.resolved_at,
+    notes: decodeLegacyHelpResponseNotes(row.content),
+  };
+};
 
 const mapSessionRow = (
   row: any,
@@ -883,44 +970,36 @@ export const buildTeacherSessionSnapshot = async (
     helpByStudent.set(row.student_id, mapHelpRequestRow(row));
   }
 
-  const openInterventionsByStudent = new Map<string, number>();
+  const openInterventionsByWorkspace = new Map<string, number>();
   for (const row of interventionRows.data ?? []) {
-    if (activeTaskId && row.task_id !== activeTaskId) {
-      continue;
-    }
-
-    openInterventionsByStudent.set(
-      row.student_id,
-      (openInterventionsByStudent.get(row.student_id) ?? 0) + 1,
+    const workspaceKey = `${row.student_id}:${row.task_id}`;
+    openInterventionsByWorkspace.set(
+      workspaceKey,
+      (openInterventionsByWorkspace.get(workspaceKey) ?? 0) + 1,
     );
   }
 
-  const metricsByStudent = new Map<string, any>();
+  const metricsByWorkspace = new Map<string, any>();
   for (const row of metricRows.data ?? []) {
-    if (activeTaskId && row.task_id !== activeTaskId) {
-      continue;
-    }
-    metricsByStudent.set(row.student_id, row);
+    metricsByWorkspace.set(`${row.student_id}:${row.task_id}`, row);
   }
 
-  const codeByStudent = new Map<string, string>();
+  const codeByWorkspace = new Map<string, string>();
   for (const row of codeRows.data ?? []) {
-    if (activeTaskId && row.task_id !== activeTaskId) {
-      continue;
-    }
-    codeByStudent.set(row.student_id, row.code_content ?? "");
+    codeByWorkspace.set(`${row.student_id}:${row.task_id}`, row.code_content ?? "");
   }
 
   const tasksById = new Map(taskSet.map((task) => [task.taskId, task.task]));
   const session = mapSessionRow(sessionRow, taskSet, roster);
   const students: StudentOverview[] = roster.map((student) => {
-    const metric = metricsByStudent.get(student.studentId);
     const helpRequest = helpByStudent.get(student.studentId);
     const currentTaskId = student.currentTaskId ?? activeTaskId;
     const currentTask = currentTaskId ? tasksById.get(currentTaskId) : undefined;
+    const workspaceKey = currentTaskId ? `${student.studentId}:${currentTaskId}` : null;
+    const metric = workspaceKey ? metricsByWorkspace.get(workspaceKey) : undefined;
     const snippet =
       student.overviewSnippet ||
-      buildOverviewSnippet(codeByStudent.get(student.studentId) ?? "");
+      buildOverviewSnippet(workspaceKey ? codeByWorkspace.get(workspaceKey) ?? "" : "");
 
     const runAttempts = metric?.run_attempts ?? 0;
     const correctionsUsed = metric?.corrections_used ?? 0;
@@ -950,7 +1029,9 @@ export const buildTeacherSessionSnapshot = async (
       completedAt: metric?.completed_at ?? undefined,
       successRate,
       currentCodeSnippet: snippet,
-      pendingInterventionCount: openInterventionsByStudent.get(student.studentId) ?? 0,
+      pendingInterventionCount: workspaceKey
+        ? openInterventionsByWorkspace.get(workspaceKey) ?? 0
+        : 0,
       lastError: null,
     };
   });
@@ -960,6 +1041,149 @@ export const buildTeacherSessionSnapshot = async (
     students,
     helpRequests: Array.from(helpByStudent.values()),
   };
+};
+
+export const listResolvedHelpResponsesByTask = async (
+  sessionId: string,
+  studentId: string,
+): Promise<Record<string, ResolvedHelpResponse | undefined>> => {
+  const { data, error } = await supabaseAdmin
+    .from("help_requests")
+    .select("id, task_id, resolved_at, resolution_notes")
+    .eq("session_id", sessionId)
+    .eq("student_id", studentId)
+    .eq("status", "resolved")
+    .not("task_id", "is", null)
+    .order("resolved_at", { ascending: false });
+
+  if (error) {
+    if (isMissingHelpResponseColumnsError(error)) {
+      return listLegacyResolvedHelpResponsesByTask(sessionId, studentId);
+    }
+    throw new HttpError(500, `Failed to load resolved help responses: ${error.message}`);
+  }
+
+  const responsesByTask: Record<string, ResolvedHelpResponse | undefined> = {};
+
+  for (const row of data ?? []) {
+    if (responsesByTask[row.task_id]) {
+      continue;
+    }
+
+    const response = toResolvedHelpResponse(row);
+    if (response) {
+      responsesByTask[row.task_id] = response;
+    }
+  }
+
+  return responsesByTask;
+};
+
+export const listLegacyResolvedHelpResponsesByTask = async (
+  sessionId: string,
+  studentId: string,
+): Promise<Record<string, ResolvedHelpResponse | undefined>> => {
+  const { data, error } = await supabaseAdmin
+    .from("editor_interventions")
+    .select("id, task_id, resolved_at, content")
+    .eq("session_id", sessionId)
+    .eq("student_id", studentId)
+    .eq("type", "comment")
+    .eq("status", "resolved")
+    .like("content", `${HELP_RESPONSE_INTERVENTION_PREFIX}%`)
+    .order("resolved_at", { ascending: false });
+
+  if (error) {
+    throw new HttpError(500, `Failed to load legacy help responses: ${error.message}`);
+  }
+
+  const responsesByTask: Record<string, ResolvedHelpResponse | undefined> = {};
+
+  for (const row of data ?? []) {
+    if (responsesByTask[row.task_id]) {
+      continue;
+    }
+
+    const response = toLegacyResolvedHelpResponse(row);
+    if (response) {
+      responsesByTask[row.task_id] = response;
+    }
+  }
+
+  return responsesByTask;
+};
+
+export const upsertLegacyResolvedHelpResponse = async (payload: {
+  sessionId: string;
+  taskId: string;
+  studentId: string;
+  teacherId: string;
+  requestId: string;
+  resolvedAt: string;
+  notes: TeacherHelpNote[];
+}) => {
+  const { data: existingRows, error: existingError } = await supabaseAdmin
+    .from("editor_interventions")
+    .select("id")
+    .eq("session_id", payload.sessionId)
+    .eq("task_id", payload.taskId)
+    .eq("student_id", payload.studentId)
+    .eq("teacher_id", payload.teacherId)
+    .eq("type", "comment")
+    .eq("status", "resolved")
+    .like("content", `${HELP_RESPONSE_INTERVENTION_PREFIX}%`)
+    .order("resolved_at", { ascending: false })
+    .limit(1);
+
+  if (existingError) {
+    throw new HttpError(500, `Failed to inspect legacy help response storage: ${existingError.message}`);
+  }
+
+  const encodedContent = encodeLegacyHelpResponseNotes(payload.notes);
+
+  if ((existingRows ?? []).length > 0) {
+    const { error: updateError } = await supabaseAdmin
+      .from("editor_interventions")
+      .update({
+        content: encodedContent,
+        resolved_at: payload.resolvedAt,
+        updated_at: payload.resolvedAt,
+      })
+      .eq("id", existingRows![0].id);
+
+    if (updateError) {
+      throw new HttpError(500, `Failed to update legacy help response storage: ${updateError.message}`);
+    }
+
+    return;
+  }
+
+  const { error: insertError } = await supabaseAdmin
+    .from("editor_interventions")
+    .insert({
+      id: payload.requestId,
+      session_id: payload.sessionId,
+      task_id: payload.taskId,
+      student_id: payload.studentId,
+      teacher_id: payload.teacherId,
+      type: "comment",
+      status: "resolved",
+      mode: "view",
+      range: {
+        startLineNumber: 1,
+        startColumn: 1,
+        endLineNumber: 1,
+        endColumn: 1,
+      },
+      content: encodedContent,
+      created_at: payload.resolvedAt,
+      updated_at: payload.resolvedAt,
+      resolved_at: payload.resolvedAt,
+    });
+
+  if (insertError) {
+    throw new HttpError(500, `Failed to insert legacy help response storage: ${insertError.message}`);
+  }
 };
 
 export const listTeacherSessions = async (teacherId: string) => {

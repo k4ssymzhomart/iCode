@@ -10,6 +10,7 @@ import {
   buildOverviewSnippet,
   getSessionTasks,
   getTeacherLiveSessionRecord,
+  listResolvedHelpResponsesByTask,
   loadSessionRecord,
   normalizeSessionControls,
   updateSessionStudentActivity,
@@ -69,11 +70,15 @@ export const handleJoinClassroom = async (
       sessionRow.active_task_id ??
       tasks.find((task) => task.isActive)?.taskId ??
       sessionRow.task_id;
-    const activeTask = activeTaskId
-      ? tasks.find((task) => task.taskId === activeTaskId)?.task
+    const studentTaskId =
+      membership.current_task_id && tasks.some((task) => task.taskId === membership.current_task_id)
+        ? membership.current_task_id
+        : activeTaskId;
+    const activeTask = studentTaskId
+      ? tasks.find((task) => task.taskId === studentTaskId)?.task
       : undefined;
 
-    if (!activeTaskId || !activeTask) {
+    if (!studentTaskId || !activeTask) {
       res.status(409).json({
         success: false,
         error: "This session does not have an active task yet.",
@@ -83,14 +88,14 @@ export const handleJoinClassroom = async (
 
     await updateSessionStudentActivity(sessionRow.id, userId, {
       status: "active",
-      currentTaskId: membership.current_task_id ?? activeTaskId,
+      currentTaskId: studentTaskId,
       overviewSnippet: membership.overview_snippet ?? buildOverviewSnippet(activeTask.initialCode),
     });
 
     await supabaseAdmin.from("student_metrics").upsert(
       {
         session_id: sessionRow.id,
-        task_id: activeTaskId,
+        task_id: studentTaskId,
         student_id: userId,
       },
       { onConflict: "session_id, task_id, student_id" },
@@ -100,6 +105,10 @@ export const handleJoinClassroom = async (
       ...sessionRow,
       active_task_id: activeTaskId,
     });
+    const resolvedHelpResponsesByTask = await listResolvedHelpResponsesByTask(
+      sessionRow.id,
+      userId,
+    );
 
     const response: JoinSessionResponse = {
       success: true,
@@ -115,10 +124,11 @@ export const handleJoinClassroom = async (
         helpStatus: membership.help_status ?? "none",
         joinedAt: membership.joined_at ?? new Date().toISOString(),
         lastActivityAt: new Date().toISOString(),
-        currentTaskId: membership.current_task_id ?? activeTaskId,
+        currentTaskId: studentTaskId,
         overviewSnippet:
           membership.overview_snippet ?? buildOverviewSnippet(activeTask.initialCode),
       },
+      resolvedHelpResponsesByTask,
       config: normalizeSessionControls(sessionRow.controls ?? sessionRow.config),
     };
 
@@ -211,8 +221,16 @@ export const handleGetStudentSessionSnapshot = async (
     const { membership } = await assertStudentInSession(userId, sessionId);
     const session = await loadSessionRecord(sessionId);
     const taskSet = await getSessionTasks(sessionId, session);
+    const resolvedHelpResponsesByTask = await listResolvedHelpResponsesByTask(
+      sessionId,
+      userId,
+    );
+    const preferredTaskId =
+      membership.current_task_id && taskSet.some((task) => task.taskId === membership.current_task_id)
+        ? membership.current_task_id
+        : session.active_task_id ?? session.task_id;
     const activeTask =
-      taskSet.find((task) => task.taskId === (session.active_task_id ?? session.task_id)) ??
+      taskSet.find((task) => task.taskId === preferredTaskId) ??
       taskSet.find((task) => task.isActive) ??
       taskSet[0];
 
@@ -228,10 +246,11 @@ export const handleGetStudentSessionSnapshot = async (
         helpStatus: membership.help_status ?? "none",
         joinedAt: membership.joined_at ?? undefined,
         lastActivityAt: membership.last_activity_at ?? undefined,
-        currentTaskId: membership.current_task_id ?? undefined,
+        currentTaskId: activeTask?.taskId ?? membership.current_task_id ?? undefined,
         overviewSnippet: membership.overview_snippet ?? undefined,
         helpRequestedAt: membership.help_requested_at ?? undefined,
       },
+      resolvedHelpResponsesByTask,
     });
   } catch (error) {
     sendControllerError(res, error);

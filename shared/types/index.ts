@@ -31,6 +31,7 @@ export type SessionStudentStatus =
   | "completed";
 export type HelpRequestStatus = "pending" | "active_intervention" | "resolved";
 export type HelpStatus = "none" | "requested" | "active" | "resolved";
+export type TeacherFocusMode = "view" | "edit";
 export type TeacherInterventionMode = "view" | "suggest" | "edit";
 export type EditorInterventionType =
   | "comment"
@@ -232,6 +233,20 @@ export interface HelpRequest {
   resolvedAt?: string;
 }
 
+export type TeacherHelpNote = {
+  id: string;
+  sender: "teacher";
+  text: string;
+  createdAt: string;
+};
+
+export type ResolvedHelpResponse = {
+  requestId: string;
+  taskId: string;
+  resolvedAt: string;
+  notes: TeacherHelpNote[];
+};
+
 // API Contracts
 export interface JoinSessionRequest {
   joinCode: string;
@@ -247,6 +262,7 @@ export interface JoinSessionResponse {
   activeTask?: Task;
   tasks?: SessionTask[];
   membership?: SessionStudent;
+  resolvedHelpResponsesByTask?: Record<string, ResolvedHelpResponse | undefined>;
   config?: SessionControls;
   error?: string;
   appState?: "unauthorized" | "not_found" | "forbidden";

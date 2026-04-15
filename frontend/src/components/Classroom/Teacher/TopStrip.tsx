@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Play, Pause, StopCircle, RefreshCw, Hash, Users, AlertCircle, Clock, Activity } from "lucide-react";
+import { Play, Pause, StopCircle, RefreshCw, Hash, Users, AlertCircle, Clock, Activity, Loader2 } from "lucide-react";
 import type { TeacherSession } from "@shared/types";
 
 interface TopStripProps {
@@ -14,11 +14,11 @@ interface TopStripProps {
   stuckCount: number;
   helpCount: number;
   avgTime: string;
-  onStateChange?: (state: TeacherSession["state"]) => void;
-  onRegenerateCode?: () => void;
-  onActiveTaskChange?: (taskId: string) => void;
-  onBroadcastMessage?: () => void;
-  onPinHint?: () => void;
+  onStateChange?: (state: TeacherSession["state"]) => void | Promise<void>;
+  onRegenerateCode?: () => void | Promise<void>;
+  onActiveTaskChange?: (taskId: string) => void | Promise<void>;
+  onBroadcastMessage?: () => void | Promise<void>;
+  onPinHint?: () => void | Promise<void>;
 }
 
 const TopStrip: React.FC<TopStripProps> = ({
@@ -42,6 +42,17 @@ const TopStrip: React.FC<TopStripProps> = ({
   const [elapsed, setElapsed] = useState(0);
   const [topic, setTopic] = useState(initialTopic);
   const [isEditing, setIsEditing] = useState(false);
+  const [actionStates, setActionStates] = useState<Record<string, boolean>>({});
+
+  const handleAsyncAction = async (key: string, action?: () => void | Promise<void>) => {
+    if (!action) return;
+    setActionStates((prev) => ({ ...prev, [key]: true }));
+    try {
+      await action();
+    } finally {
+      setActionStates((prev) => ({ ...prev, [key]: false }));
+    }
+  };
 
   useEffect(() => {
     if (!startTime || sessionState !== "live") return;
@@ -115,16 +126,20 @@ const TopStrip: React.FC<TopStripProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={onBroadcastMessage}
-                    className="border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                    onClick={() => handleAsyncAction('broadcast', onBroadcastMessage)}
+                    disabled={actionStates['broadcast']}
+                    className="flex justify-center items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:opacity-50"
                   >
+                    {actionStates['broadcast'] && <Loader2 className="w-3 h-3 animate-spin" />}
                     Broadcast
                   </button>
                   <button
                     type="button"
-                    onClick={onPinHint}
-                    className="border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                    onClick={() => handleAsyncAction('pinHint', onPinHint)}
+                    disabled={actionStates['pinHint']}
+                    className="flex justify-center items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:opacity-50"
                   >
+                    {actionStates['pinHint'] && <Loader2 className="w-3 h-3 animate-spin" />}
                     Pin Hint
                   </button>
                 </div>
@@ -132,14 +147,14 @@ const TopStrip: React.FC<TopStripProps> = ({
             ) : null}
          </div>
          <div className="flex flex-col border-l-2 border-[#11110f] shrink-0 w-16">
-            <button onClick={() => onStateChange?.("live")} disabled={sessionState === "live"} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'live' ? 'bg-[#ccff00]' : 'bg-white hover:bg-gray-50'} transition-colors`}>
-               <Play className="w-5 h-5 fill-[#11110f]" />
+            <button onClick={() => handleAsyncAction('state-live', () => onStateChange?.("live"))} disabled={sessionState === "live" || actionStates['state-live']} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'live' ? 'bg-[#ccff00]' : 'bg-white hover:bg-gray-50'} transition-colors disabled:opacity-50`}>
+               {actionStates['state-live'] ? <Loader2 className="w-5 h-5 animate-spin text-[#11110f]" /> : <Play className="w-5 h-5 fill-[#11110f]" />}
             </button>
-            <button onClick={() => onStateChange?.("paused")} disabled={sessionState === "completed"} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'paused' ? 'bg-orange-200' : 'bg-white hover:bg-gray-50'} transition-colors`}>
-               <Pause className="w-5 h-5 fill-[#11110f]" />
+            <button onClick={() => handleAsyncAction('state-paused', () => onStateChange?.("paused"))} disabled={sessionState === "completed" || actionStates['state-paused']} className={`flex-1 flex justify-center items-center border-b-2 border-[#11110f] ${sessionState === 'paused' ? 'bg-orange-200' : 'bg-white hover:bg-gray-50'} transition-colors disabled:opacity-50`}>
+               {actionStates['state-paused'] ? <Loader2 className="w-5 h-5 animate-spin text-[#11110f]" /> : <Pause className="w-5 h-5 fill-[#11110f]" />}
             </button>
-            <button onClick={() => onStateChange?.("completed")} className={`flex-1 flex justify-center items-center ${sessionState === 'completed' ? 'bg-rose-200' : 'bg-white hover:bg-gray-50'} transition-colors`}>
-               <StopCircle className="w-5 h-5 text-rose-600" />
+            <button onClick={() => handleAsyncAction('state-completed', () => onStateChange?.("completed"))} disabled={actionStates['state-completed']} className={`flex-1 flex justify-center items-center ${sessionState === 'completed' ? 'bg-rose-200' : 'bg-white hover:bg-gray-50'} transition-colors disabled:opacity-50`}>
+               {actionStates['state-completed'] ? <Loader2 className="w-5 h-5 animate-spin text-[#11110f]" /> : <StopCircle className="w-5 h-5 text-rose-600" />}
             </button>
          </div>
       </div>
@@ -164,9 +179,11 @@ const TopStrip: React.FC<TopStripProps> = ({
               <span className="text-xl font-black text-[#11110f] font-mono">{avgTime}</span>
               <button
                 type="button"
-                onClick={onRegenerateCode}
-                className="border-2 border-[#11110f] bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                disabled={actionStates['regenCode']}
+                onClick={() => handleAsyncAction('regenCode', onRegenerateCode)}
+                className="flex items-center gap-1 border-2 border-[#11110f] bg-white px-2 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:opacity-50"
               >
+                {actionStates['regenCode'] && <Loader2 className="w-3 h-3 animate-spin" />}
                 New Code
               </button>
             </div>

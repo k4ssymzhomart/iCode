@@ -19,6 +19,10 @@ const requiredTables = [
   "feedback",
 ] as const;
 
+const requiredColumns = {
+  help_requests: ["resolution_notes", "resolved_by_teacher_id"],
+} as const;
+
 const schemaPath = new URL("./schema.sql", import.meta.url);
 
 let schemaReadyPromise: Promise<void> | null = null;
@@ -37,6 +41,14 @@ const tableExistsViaRest = async (tableName: (typeof requiredTables)[number]) =>
   return !error;
 };
 
+const columnExistsViaRest = async (
+  tableName: keyof typeof requiredColumns,
+  columnName: (typeof requiredColumns)[keyof typeof requiredColumns][number],
+) => {
+  const { error } = await supabaseAdmin.from(tableName).select(columnName).limit(1);
+  return !error;
+};
+
 const getMissingTablesViaRest = async () => {
   const results = await Promise.all(
     requiredTables.map(async (tableName) => ({
@@ -48,12 +60,38 @@ const getMissingTablesViaRest = async () => {
   return results.filter((result) => !result.exists).map((result) => result.tableName);
 };
 
+const getMissingColumnsViaRest = async () => {
+  const checks = await Promise.all(
+    Object.entries(requiredColumns).flatMap(([tableName, columns]) =>
+      columns.map(async (columnName) => ({
+        tableName,
+        columnName,
+        exists: await columnExistsViaRest(
+          tableName as keyof typeof requiredColumns,
+          columnName,
+        ),
+      })),
+    ),
+  );
+
+  return checks
+    .filter((check) => !check.exists)
+    .map((check) => `${check.tableName}.${check.columnName}`);
+};
+
 export const ensureBackendSchema = async () => {
   if (!schemaReadyPromise) {
     schemaReadyPromise = (async () => {
-      const missingTables = await getMissingTablesViaRest().catch(() => requiredTables as readonly string[]);
+      const [missingTables, missingColumns] = await Promise.all([
+        getMissingTablesViaRest().catch(() => requiredTables as readonly string[]),
+        getMissingColumnsViaRest().catch(() =>
+          Object.entries(requiredColumns).flatMap(([tableName, columns]) =>
+            columns.map((columnName) => `${tableName}.${columnName}`),
+          ),
+        ),
+      ]);
 
-      if (missingTables.length === 0) {
+      if (missingTables.length === 0 && missingColumns.length === 0) {
         console.log("Backend schema already available through Supabase REST.");
         return;
       }
@@ -62,14 +100,14 @@ export const ensureBackendSchema = async () => {
 
       if (!connectionString) {
         console.warn(
-          `SUPABASE_DB_URL is missing. Skipping backend schema bootstrap. Missing tables: ${missingTables.join(", ")}`,
+          `SUPABASE_DB_URL is missing. Skipping backend schema bootstrap. Missing schema: ${[...missingTables, ...missingColumns].join(", ")}`,
         );
         return;
       }
 
       if (connectionString.includes("[YOUR-PASSWORD]")) {
         console.warn(
-          `SUPABASE_DB_URL still contains the placeholder password. Skipping backend schema bootstrap. Missing tables: ${missingTables.join(", ")}`,
+          `SUPABASE_DB_URL still contains the placeholder password. Skipping backend schema bootstrap. Missing schema: ${[...missingTables, ...missingColumns].join(", ")}`,
         );
         return;
       }

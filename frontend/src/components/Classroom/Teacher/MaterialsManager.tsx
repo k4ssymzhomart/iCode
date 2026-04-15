@@ -7,6 +7,7 @@ import {
   FileJson,
   Layers3,
   UploadCloud,
+  Loader2,
 } from "lucide-react";
 
 interface MaterialsManagerProps {
@@ -161,9 +162,16 @@ const MaterialsManager: React.FC<MaterialsManagerProps> = ({ taskSets, onImport 
             <button
               disabled={!file || status === "uploading"}
               onClick={() => void handleUpload()}
-              className="px-8 py-3 bg-[#11110f] hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black uppercase tracking-widest text-sm transition-transform hover:-translate-y-0.5 active:translate-y-1 shadow-[4px_4px_0_#ccff00] border-2 border-[#11110f]"
+              className="flex items-center gap-2 px-8 py-3 bg-[#11110f] hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black uppercase tracking-widest text-sm transition-transform hover:-translate-y-0.5 active:translate-y-1 shadow-[4px_4px_0_#ccff00] border-2 border-[#11110f]"
             >
-              {status === "uploading" ? "Uploading..." : "Import Task Set"}
+              {status === "uploading" ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Uploading...
+                </>
+              ) : (
+                "Import Task Set"
+              )}
             </button>
           </div>
         </div>

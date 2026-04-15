@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Maximize2, Minimize2, Clock, Users, HelpCircle, Activity } from "lucide-react";
+import { Maximize2, Minimize2, Clock, Users, HelpCircle, Activity, MessageSquareText, ChevronDown, ChevronUp } from "lucide-react";
+import type { ResolvedHelpResponse } from "@shared/types";
 
 interface LabLayoutProps {
   sessionCode: string;
@@ -12,6 +13,8 @@ interface LabLayoutProps {
   onRequestHelp: () => void;
   broadcastMessage?: string | null;
   pinnedHint?: string | null;
+  resolvedHelpResponse?: ResolvedHelpResponse | null;
+  currentTaskTitle?: string;
   leftPanel: React.ReactNode;
   centerPanel: React.ReactNode;
   rightPanel: React.ReactNode;
@@ -29,6 +32,8 @@ const LabLayout: React.FC<LabLayoutProps> = ({
   onRequestHelp,
   broadcastMessage,
   pinnedHint,
+  resolvedHelpResponse,
+  currentTaskTitle,
   leftPanel,
   centerPanel,
   rightPanel,
@@ -36,6 +41,7 @@ const LabLayout: React.FC<LabLayoutProps> = ({
 }) => {
   const [focusMode, setFocusMode] = useState(false);
   const [showClassmates, setShowClassmates] = useState(false);
+  const [showTeacherResponse, setShowTeacherResponse] = useState(false);
 
   useEffect(() => {
     window.dispatchEvent(new CustomEvent('toggle-header', { detail: focusMode }));
@@ -43,6 +49,12 @@ const LabLayout: React.FC<LabLayoutProps> = ({
       window.dispatchEvent(new CustomEvent('toggle-header', { detail: false }));
     }
   }, [focusMode]);
+
+  useEffect(() => {
+    if (resolvedHelpResponse) {
+      setShowTeacherResponse(true);
+    }
+  }, [resolvedHelpResponse?.requestId]);
   
   // Fake Timer logic
   const [elapsed, setElapsed] = useState(0);
@@ -152,6 +164,55 @@ const LabLayout: React.FC<LabLayoutProps> = ({
           ) : null}
         </div>
       )}
+
+      {resolvedHelpResponse ? (
+        <div className="z-20 border-b-2 border-[#11110f] bg-white px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-xs font-black uppercase tracking-[0.2em] text-[#11110f] shadow-[2px_2px_0_#11110f]">
+              <MessageSquareText className="h-4 w-4" />
+              Teacher Response Ready
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowTeacherResponse((current) => !current)}
+              className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] shadow-[2px_2px_0_#11110f]"
+            >
+              {showTeacherResponse ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+              {showTeacherResponse ? "Hide Response" : "Show Response"}
+            </button>
+          </div>
+
+          {showTeacherResponse ? (
+            <div className="mt-3 border-2 border-[#11110f] bg-[#fafafa] p-4 shadow-[4px_4px_0_rgba(17,17,15,0.08)]">
+              <div className="mb-3 flex flex-wrap items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                <span>Resolved for {currentTaskTitle || "Current Task"}</span>
+                <span className="h-1 w-1 rounded-full bg-gray-400" />
+                <span>{new Date(resolvedHelpResponse.resolvedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+              </div>
+
+              <div className="space-y-3">
+                {resolvedHelpResponse.notes.length > 0 ? (
+                  resolvedHelpResponse.notes.map((note, index) => (
+                    <div key={note.id} className="border-2 border-[#11110f] bg-white p-3">
+                      <div className="mb-1 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                        Teacher Note {index + 1}
+                      </div>
+                      <div className="whitespace-pre-wrap text-sm font-medium leading-relaxed text-[#11110f]">
+                        {note.text}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="border-2 border-dashed border-gray-300 bg-white p-4 text-xs font-bold uppercase tracking-[0.2em] text-gray-500">
+                    Teacher marked this help request as resolved.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* Main Area */}
       <div className="flex-1 relative overflow-hidden flex flex-col md:flex-row bg-[#fafafa] p-2 gap-2">

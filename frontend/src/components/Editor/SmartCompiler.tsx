@@ -31,15 +31,7 @@ import {
   saveCompilerStdin,
 } from "./compilerStorage";
 
-const defaultCode = `import sys
-
-def solve(data: str) -> str:
-    # Write your logic here.
-    return data.strip()
-
-if __name__ == "__main__":
-    print(solve(sys.stdin.read()))
-`;
+const defaultCode = "";
 
 const fetchJson = async <T,>(url: string, init?: RequestInit) => {
   const response = await fetch(url, init);

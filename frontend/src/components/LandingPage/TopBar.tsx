@@ -4,17 +4,18 @@ import fullLogo from "@/assets/full_logo.png";
 import { AuthSection } from "../Layout/AuthSection";
 
 const navLinks = [
-  { label: "Features", href: "#features" },
-  { label: "Smart Compiler", href: "/smart-compiler" },
-  { label: "Classroom Mode", href: "/classroom" },
-  { label: "Teacher View", href: "/teacher" },
+  { label: "Problem", href: "#problem" },
+  { label: "Demo", href: "#demo" },
+  { label: "Solution", href: "#solution" },
+  { label: "How it works", href: "#how-it-works" },
+  { label: "Pricing", href: "#pricing" },
 ];
 
 const TopBar = () => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   return (
-    <header className="sticky top-0 z-50 bg-white/90 backdrop-blur-md border-b border-[rgba(17,17,15,0.05)] px-4 py-4 sm:px-6 lg:px-8 relative overflow-visible">
+    <header className="sticky top-0 z-50 bg-white border-b-2 border-black px-4 py-3 sm:px-6 lg:px-8 relative overflow-visible shadow-[0_4px_0_rgba(17,17,15,0.05)]">
       <div className="mx-auto max-w-[1320px] flex items-center justify-between">
         
         {/* Left: Logo */}
@@ -25,7 +26,7 @@ const TopBar = () => {
         {/* Center: Navigation Links (desktop) */}
         <nav className="hidden md:flex items-center gap-6">
           {navLinks.map((link) => (
-            <a key={link.href} href={link.href} className="text-sm font-medium text-[#11110f]/70 hover:text-[#11110f] transition-colors">
+            <a key={link.href} href={link.href} className="text-xs font-bold uppercase tracking-widest text-[#11110f]/60 hover:text-black transition-colors px-2 py-1 border-b-2 border-transparent hover:border-[#ccff00]">
               {link.label}
             </a>
           ))}
@@ -56,7 +57,7 @@ const TopBar = () => {
               key={link.href}
               href={link.href}
               onClick={() => setIsMobileMenuOpen(false)}
-              className="block w-full text-center px-4 py-3 text-base font-bold text-[#11110f] border border-gray-200 hover:bg-gray-50 transition-all"
+              className="block w-full text-left px-4 py-3 text-sm font-bold uppercase tracking-widest text-[#11110f] border-b border-gray-100 hover:bg-[#ccff00] hover:pl-6 transition-all"
             >
               {link.label}
             </a>

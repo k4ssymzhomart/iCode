@@ -5,38 +5,23 @@ import React from "react";
 const features = [
   {
     icon: <Zap className="w-6 h-6 text-black" />,
-    title: "Smart Compiler",
-    description: "Clear error messages with line numbers and fix suggestions"
-  },
-  {
-    icon: <Brain className="w-6 h-6 text-black" />,
-    title: "AI Explain",
-    description: "Simple explanations for syntax and logic errors"
-  },
-  {
-    icon: <Lightbulb className="w-6 h-6 text-black" />,
-    title: "Hint System",
-    description: "Guidance without revealing full solutions"
-  },
-  {
-    icon: <CheckCircle className="w-6 h-6 text-black" />,
-    title: "Correct Mode",
-    description: "Auto-fix with inline comments explaining changes"
+    title: "Smart Error Explanations",
+    description: "Clear, pinpointed error explanations that help students understand why without just giving them the answer."
   },
   {
     icon: <Users className="w-6 h-6 text-black" />,
-    title: "Classroom Mode",
-    description: "Real-time dashboard of student progress and struggles"
+    title: "Real-time Classroom Dashboard",
+    description: "See the status of your entire class at a glance. Know instantly who is stuck and for how long."
   },
   {
     icon: <History className="w-6 h-6 text-black" />,
-    title: "Session History",
-    description: "Track attempts and learning progression"
+    title: "Live Code Collaboration",
+    description: "Join any student's coding session seamlessly. Edit, highlight, or leave comments in real time."
   },
   {
-    icon: <Globe className="w-6 h-6 text-black" />,
-    title: "Multi-language support",
-    description: "Python and expanding to other OOP languages"
+    icon: <Brain className="w-6 h-6 text-black" />,
+    title: "AI-Assisted Learning",
+    description: "Built for teaching, not cheating. Mentors students through logic drops instead of generating code for them."
   }
 ];
 
@@ -62,7 +47,7 @@ const itemVariants = {
 
 const FeaturesGrid = () => {
   return (
-    <section className="px-4 py-24 sm:px-6 lg:px-8 bg-white border-t border-[rgba(17,17,15,0.05)] relative z-10">
+    <section id="features" className="px-4 py-24 sm:px-6 lg:px-8 bg-white border-t border-[rgba(17,17,15,0.05)] relative z-10">
       <div className="mx-auto max-w-[1320px]">
         <div className="text-center md:max-w-3xl md:mx-auto mb-16">
           <motion.h2
@@ -81,8 +66,7 @@ const FeaturesGrid = () => {
           variants={containerVariants}
           initial="hidden"
           whileInView="visible"
-          viewport={{ once: true, margin: "-100px" }}
-          className="grid gap-6 md:grid-cols-2 lg:grid-cols-4"
+          className="grid gap-6 md:grid-cols-2"
         >
           {features.map((feature) => (
             <motion.div

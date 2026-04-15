@@ -5,8 +5,9 @@ import {
 } from "@liveblocks/react";
 import type {
   HelpStatus,
+  ResolvedHelpResponse,
   SessionStudentStatus,
-  TeacherInterventionMode,
+  TeacherFocusMode,
 } from "@shared/types";
 import { supabase } from "./supabase";
 
@@ -14,7 +15,7 @@ export type SessionRoomPresence = {
   currentTaskId: string | null;
   status: SessionStudentStatus | null;
   workspaceStudentId: string | null;
-  mode: TeacherInterventionMode | null;
+  mode: TeacherFocusMode | null;
 };
 
 export type LiveblocksEditorRange = {
@@ -52,7 +53,9 @@ export type SessionRoomEvent =
   | {
       type: "help-resolved";
       studentId: string;
+      taskId: string;
       resolvedAt: string;
+      response: ResolvedHelpResponse;
     }
   | {
       type: "broadcast-message";
@@ -70,13 +73,13 @@ export type SessionRoomEvent =
       type: "teacher-focus";
       studentId: string;
       taskId: string;
-      mode: TeacherInterventionMode;
+      mode: TeacherFocusMode;
     };
 
 export type EditorRoomPresence = {
   cursor: { lineNumber: number; column: number } | null;
   selection: LiveblocksEditorRange | null;
-  mode: TeacherInterventionMode | null;
+  mode: TeacherFocusMode | null;
   workspaceStudentId: string | null;
 };
 
@@ -90,11 +93,11 @@ export type EditorRoomEvent =
   | {
       type: "teacher-joined";
       teacherName: string;
-      mode: TeacherInterventionMode;
+      mode: TeacherFocusMode;
     }
   | {
       type: "teacher-mode";
-      mode: TeacherInterventionMode;
+      mode: TeacherFocusMode;
     }
   | {
       type: "interventions-updated";

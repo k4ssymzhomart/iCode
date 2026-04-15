@@ -31,7 +31,6 @@ export const teacherNavItems = [
   { label: "Active Lab", href: appPaths.teacher },
   { label: "Sessions", href: appPaths.teacherSessions },
   { label: "Students", href: appPaths.teacherStudents },
-  { label: "Manage Classroom", href: appPaths.teacher },
   { label: "Materials", href: appPaths.teacherMaterials },
   { label: "Settings", href: appPaths.teacherSettings },
 ];

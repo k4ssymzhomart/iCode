@@ -7,8 +7,11 @@ import fullLogo from "@/assets/full_logo.png";
 
 import TopBar from "@/components/LandingPage/TopBar";
 import Hero from "@/components/LandingPage/Hero";
+import ProblemSection from "@/components/LandingPage/ProblemSection";
 import DemoSection from "@/components/LandingPage/DemoSection";
-import FeaturesGrid from "@/components/LandingPage/FeaturesGrid";
+import SolutionSection from "@/components/LandingPage/SolutionSection";
+import HowItWorksSection from "@/components/LandingPage/HowItWorksSection";
+import RoleSplitSection from "@/components/LandingPage/RoleSplitSection";
 import PricingSection from "@/components/LandingPage/PricingSection";
 import BottomCTA from "@/components/LandingPage/BottomCTA";
 import Footer from "@/components/LandingPage/Footer";
@@ -56,7 +59,10 @@ const HomePage = () => {
       <TopBar />
       <Hero />
       <DemoSection />
-      <FeaturesGrid />
+      <ProblemSection />
+      <SolutionSection />
+      <HowItWorksSection />
+      <RoleSplitSection />
       <PricingSection />
       <BottomCTA />
       <Footer />

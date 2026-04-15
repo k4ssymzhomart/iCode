@@ -10,6 +10,7 @@ import {
   RefreshCcw,
   StopCircle,
   Users,
+  Loader2,
 } from "lucide-react";
 
 interface SessionsManagerProps {
@@ -41,6 +42,7 @@ const SessionsManager = ({
   const [selectedTaskSetId, setSelectedTaskSetId] = useState("");
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [actionStates, setActionStates] = useState<Record<string, boolean>>({});
 
   const liveSessionId = sessions.find((session) => session.state === "live")?.id;
   const taskSetLookup = useMemo(
@@ -91,6 +93,26 @@ const SessionsManager = ({
       setSelectedStudentIds([]);
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleStateChange = async (sessionId: string, nextState: TeacherSession["state"]) => {
+    const key = `${sessionId}-${nextState}`;
+    setActionStates(prev => ({ ...prev, [key]: true }));
+    try {
+      await onChangeState(sessionId, nextState);
+    } finally {
+      setActionStates(prev => ({ ...prev, [key]: false }));
+    }
+  };
+
+  const handleRegenerate = async (sessionId: string) => {
+    const key = `${sessionId}-regen`;
+    setActionStates(prev => ({ ...prev, [key]: true }));
+    try {
+      await onRegenerateCode(sessionId);
+    } finally {
+      setActionStates(prev => ({ ...prev, [key]: false }));
     }
   };
 
@@ -207,7 +229,7 @@ const SessionsManager = ({
               disabled={isSubmitting || !canCreateDraft}
               className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-[#11110f] px-4 py-3 text-xs font-black uppercase tracking-[0.2em] text-[#ccff00] shadow-[4px_4px_0_#ccff00] transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              <Plus className="h-4 w-4" />
+              {isSubmitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
               {isSubmitting ? "Creating..." : "Create Draft Session"}
             </button>
           </div>
@@ -312,11 +334,11 @@ const SessionsManager = ({
                     {session.state === "draft" || session.state === "paused" ? (
                       <button
                         type="button"
-                        disabled={Boolean(liveSessionId && liveSessionId !== session.id)}
-                        onClick={() => void onChangeState(session.id, "live")}
+                        disabled={Boolean(liveSessionId && liveSessionId !== session.id) || actionStates[`${session.id}-live`]}
+                        onClick={() => void handleStateChange(session.id, "live")}
                         className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Play className="h-4 w-4" />
+                        {actionStates[`${session.id}-live`] ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                         {session.state === "draft" ? "Start Session" : "Resume"}
                       </button>
                     ) : null}
@@ -324,10 +346,11 @@ const SessionsManager = ({
                     {session.state === "live" ? (
                       <button
                         type="button"
-                        onClick={() => void onChangeState(session.id, "paused")}
-                        className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
+                        disabled={actionStates[`${session.id}-paused`]}
+                        onClick={() => void handleStateChange(session.id, "paused")}
+                        className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <Pause className="h-4 w-4" />
+                        {actionStates[`${session.id}-paused`] ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4" />}
                         Pause
                       </button>
                     ) : null}
@@ -335,21 +358,22 @@ const SessionsManager = ({
                     {session.state !== "completed" ? (
                       <button
                         type="button"
-                        onClick={() => void onChangeState(session.id, "completed")}
-                        className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-rose-600"
+                        disabled={actionStates[`${session.id}-completed`]}
+                        onClick={() => void handleStateChange(session.id, "completed")}
+                        className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        <StopCircle className="h-4 w-4" />
+                        {actionStates[`${session.id}-completed`] ? <Loader2 className="h-4 w-4 animate-spin" /> : <StopCircle className="h-4 w-4" />}
                         Complete
                       </button>
                     ) : null}
 
                     <button
                       type="button"
-                      onClick={() => void onRegenerateCode(session.id)}
-                      disabled={session.state === "completed"}
+                      onClick={() => void handleRegenerate(session.id)}
+                      disabled={session.state === "completed" || actionStates[`${session.id}-regen`]}
                       className="inline-flex items-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      <RefreshCcw className="h-4 w-4" />
+                      {actionStates[`${session.id}-regen`] ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCcw className="h-4 w-4" />}
                       {session.joinCode ? "Regenerate Code" : "Generate Code"}
                     </button>
                   </div>

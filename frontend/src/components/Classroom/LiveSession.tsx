@@ -5,38 +5,44 @@ import {
   Code,
   Edit3,
   Eye,
-  Lightbulb,
   RotateCcw,
   Send,
-  Wand2,
 } from "lucide-react";
 import type {
-  EditorIntervention,
+  ResolvedHelpResponse,
   StudentOverview,
-  TeacherInterventionMode,
+  TeacherFocusMode,
+  TeacherHelpNote,
   TeacherSession,
 } from "@shared/types";
 import CollaborativeEditor, {
   type CollaborativeEditorHandle,
 } from "./CollaborativeEditor";
 import { useAuth } from "@/lib/auth-context";
-import { classroomService } from "@/services/classroom";
 import { useSessionBroadcastEvent } from "@/lib/liveblocks";
 
 interface LiveSessionProps {
   session: TeacherSession;
   student: StudentOverview;
   onExit: () => void;
-  onResolveHelp: () => Promise<void>;
+  onResolveHelp: (payload: {
+    taskId: string;
+    responseNotes: TeacherHelpNote[];
+  }) => Promise<ResolvedHelpResponse | null>;
   onResetCode: () => Promise<void>;
   onCompleteSession?: () => Promise<void>;
 }
 
-const modeButtonStyles: Record<TeacherInterventionMode, string> = {
+const modeButtonStyles: Record<TeacherFocusMode, string> = {
   view: "bg-white text-[#11110f] border-[#11110f]",
-  suggest: "bg-[#ccff00] text-[#11110f] border-[#11110f]",
   edit: "bg-[#11110f] text-[#ccff00] border-[#11110f]",
 };
+
+const formatNoteTime = (timestamp: string) =>
+  new Date(timestamp).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 
 const LiveSession = ({
   session,
@@ -49,21 +55,13 @@ const LiveSession = ({
   const { profile } = useAuth();
   const editorRef = useRef<CollaborativeEditorHandle | null>(null);
   const broadcastSessionEvent = useSessionBroadcastEvent();
-  const [mode, setMode] = useState<TeacherInterventionMode>("view");
-  const [commentText, setCommentText] = useState("");
-  const [suggestedCode, setSuggestedCode] = useState("");
-  const [isSavingAction, setIsSavingAction] = useState(false);
+  const [mode, setMode] = useState<TeacherFocusMode>("view");
   const [teacherNotice, setTeacherNotice] = useState<string | null>(null);
-  const [messages, setMessages] = useState([
-    {
-      sender: "System",
-      text: `Teacher focused on ${student.profile?.fullName ?? "student"}.`,
-      time: "Now",
-    },
-  ]);
+  const [teacherNotes, setTeacherNotes] = useState<TeacherHelpNote[]>([]);
   const [newMessage, setNewMessage] = useState("");
-  const [editBaseline, setEditBaseline] = useState("");
   const [sessionDuration, setSessionDuration] = useState("00:00");
+  const [isResolvingHelp, setIsResolvingHelp] = useState(false);
+  const [isResettingCode, setIsResettingCode] = useState(false);
 
   const currentTask =
     session.taskSet.find((task) => task.taskId === student.currentTaskId)?.task ??
@@ -84,12 +82,6 @@ const LiveSession = ({
       mode,
     });
   }, [broadcastSessionEvent, currentTaskId, mode, student.studentId]);
-
-  useEffect(() => {
-    if (mode === "edit") {
-      setEditBaseline(editorRef.current?.getCode() ?? "");
-    }
-  }, [mode, student.studentId, currentTaskId]);
 
   useEffect(() => {
     if (!session.startTime) {
@@ -114,96 +106,66 @@ const LiveSession = ({
     return () => window.clearInterval(timer);
   }, [session.startTime]);
 
-  const pushIntervention = async (
-    type: EditorIntervention["type"],
-    options?: {
-      content?: string;
-      suggestedCode?: string;
-      beforeExcerpt?: string;
-      afterExcerpt?: string;
-      mode?: TeacherInterventionMode;
-    },
-  ) => {
-    if (!currentTaskId) {
-      return;
-    }
-
-    const selectedRange = editorRef.current?.getSelectedRange();
-    const codeSnapshot = editorRef.current?.getCode() ?? "";
-
-    setIsSavingAction(true);
-    try {
-      await classroomService.createIntervention({
-        sessionId: session.id,
-        studentId: student.studentId,
-        taskId: currentTaskId,
-        type,
-        mode: options?.mode ?? mode,
-        range: selectedRange ?? {
-          startLineNumber: 1,
-          startColumn: 1,
-          endLineNumber: 1,
-          endColumn: 1,
-        },
-        content: options?.content,
-        suggestedCode:
-          type === "suggestion"
-            ? options?.suggestedCode || codeSnapshot
-            : options?.suggestedCode,
-        beforeExcerpt: options?.beforeExcerpt,
-        afterExcerpt: options?.afterExcerpt,
-      });
-      editorRef.current?.notifyInterventionsChanged();
-      setCommentText("");
-      setSuggestedCode("");
-    } finally {
-      setIsSavingAction(false);
-    }
-  };
-
-  const handleCommitTeacherEdit = async () => {
-    const currentCode = editorRef.current?.getCode() ?? "";
-    if (!currentTaskId || currentCode === editBaseline) {
-      return;
-    }
-
-    await pushIntervention("direct_edit", {
-      content: "Teacher edited the code live in edit mode.",
-      beforeExcerpt: editBaseline,
-      afterExcerpt: currentCode,
-      suggestedCode: currentCode,
-      mode: "edit",
-    });
-
-    setEditBaseline(currentCode);
-    broadcastSessionEvent({
-      type: "student-activity",
-      studentId: student.studentId,
-      currentTaskId,
-      status: "active",
-      snippet: currentCode,
-      helpStatus: student.helpStatus,
-    });
-  };
-
   const handleSendMessage = (event?: FormEvent) => {
     event?.preventDefault();
-    if (!newMessage.trim()) {
+    const text = newMessage.trim();
+    if (!text) {
       return;
     }
 
-    setMessages((current) => [
+    setTeacherNotes((current) => [
       ...current,
       {
-        sender: "Teacher",
-        text: newMessage.trim(),
-        time: new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        }),
+        id: crypto.randomUUID(),
+        sender: "teacher",
+        text,
+        createdAt: new Date().toISOString(),
       },
     ]);
     setNewMessage("");
+  };
+
+  const handleResolve = async () => {
+    if (!currentTaskId || isResolvingHelp) {
+      return;
+    }
+
+    setIsResolvingHelp(true);
+    try {
+      const response = await onResolveHelp({
+        taskId: currentTaskId,
+        responseNotes: teacherNotes,
+      });
+
+      if (response) {
+        broadcastSessionEvent({
+          type: "help-resolved",
+          studentId: student.studentId,
+          taskId: currentTaskId,
+          resolvedAt: response.resolvedAt,
+          response,
+        });
+      }
+    } finally {
+      setIsResolvingHelp(false);
+    }
+  };
+
+  const handleReset = async () => {
+    if (isResettingCode) {
+      return;
+    }
+
+    setIsResettingCode(true);
+    try {
+      await onResetCode();
+      if (currentTask?.initialCode) {
+        editorRef.current?.replaceCode(currentTask.initialCode);
+      }
+      editorRef.current?.notifyInterventionsChanged();
+    } finally {
+      setIsResettingCode(false);
+    }
   };
 
   const statusLabel =
@@ -234,7 +196,7 @@ const LiveSession = ({
                 Viewing: {student.profile?.fullName ?? "Student"}
               </span>
             </div>
-            <span className="border-l-2 border-[#11110f] pl-3 py-1 font-mono text-xs font-bold">
+            <span className="border-l-2 border-[#11110f] py-1 pl-3 font-mono text-xs font-bold">
               {sessionDuration}
             </span>
             <span className="bg-[#11110f] px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-[#ccff00]">
@@ -287,10 +249,10 @@ const LiveSession = ({
         <aside className="flex w-[420px] shrink-0 flex-col border-l-2 border-[#11110f] bg-white">
           <div className="border-b-2 border-[#11110f] bg-[#fafafa] p-4">
             <div className="mb-3 text-xs font-black uppercase tracking-[0.25em] text-[#11110f]">
-              Intervention Mode
+              Focus Mode
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              {(["view", "suggest", "edit"] as const).map((nextMode) => (
+            <div className="grid grid-cols-2 gap-2">
+              {(["view", "edit"] as const).map((nextMode) => (
                 <button
                   key={nextMode}
                   type="button"
@@ -298,7 +260,6 @@ const LiveSession = ({
                   className={`border-2 px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] ${mode === nextMode ? modeButtonStyles[nextMode] : "bg-white text-[#11110f] border-[#11110f]"}`}
                 >
                   {nextMode === "view" ? <Eye className="mx-auto mb-1 h-4 w-4" /> : null}
-                  {nextMode === "suggest" ? <Lightbulb className="mx-auto mb-1 h-4 w-4" /> : null}
                   {nextMode === "edit" ? <Edit3 className="mx-auto mb-1 h-4 w-4" /> : null}
                   {nextMode}
                 </button>
@@ -322,122 +283,38 @@ const LiveSession = ({
                   {currentTask?.title ?? "No task selected"}
                 </div>
                 <div className="mt-2 text-xs font-medium text-gray-500">
-                  {currentTask?.description ?? "Teacher focus mode is attached to the student's current workspace."}
+                  {currentTask?.description ??
+                    "Teacher focus mode is attached to the student's current workspace."}
                 </div>
-              </div>
-
-              <div className="border-2 border-[#11110f] bg-white p-4">
-                <div className="mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
-                  Add Feedback
-                </div>
-                <textarea
-                  id="teacher-feedback-comment"
-                  name="teacherFeedbackComment"
-                  aria-label="Teacher feedback comment"
-                  value={commentText}
-                  onChange={(event) => setCommentText(event.target.value)}
-                  placeholder="Add a comment or explain what the student should focus on..."
-                  className="min-h-24 w-full resize-none border-2 border-[#11110f] bg-[#fafafa] px-3 py-3 text-sm font-medium text-[#11110f] focus:outline-none focus:ring-2 focus:ring-[#ccff00]"
-                />
-                <div className="mt-3 grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled={isSavingAction || !commentText.trim()}
-                    onClick={() =>
-                      void pushIntervention("comment", { content: commentText.trim(), mode: "view" })
-                    }
-                    className="border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
-                  >
-                    Add Comment
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isSavingAction || !commentText.trim()}
-                    onClick={() =>
-                      void pushIntervention("highlight", {
-                        content: commentText.trim(),
-                        mode: "suggest",
-                      })
-                    }
-                    className="border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
-                  >
-                    Highlight
-                  </button>
-                </div>
-              </div>
-
-              <div className="border-2 border-[#11110f] bg-white p-4">
-                <div className="mb-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
-                  Suggestion Block
-                </div>
-                <textarea
-                  id="teacher-suggested-code"
-                  name="teacherSuggestedCode"
-                  aria-label="Teacher suggested code"
-                  value={suggestedCode}
-                  onChange={(event) => setSuggestedCode(event.target.value)}
-                  placeholder="Paste a suggested code replacement or leave blank to snapshot the current view."
-                  className="min-h-28 w-full resize-none border-2 border-[#11110f] bg-[#fafafa] px-3 py-3 text-sm font-medium text-[#11110f] focus:outline-none focus:ring-2 focus:ring-[#ccff00]"
-                />
-                <button
-                  type="button"
-                  disabled={isSavingAction || mode === "edit"}
-                  onClick={() =>
-                    void pushIntervention("suggestion", {
-                      content: commentText.trim() || "Teacher suggested a code change.",
-                      suggestedCode: suggestedCode.trim() || editorRef.current?.getCode(),
-                      mode: "suggest",
-                    })
-                  }
-                  className="mt-3 inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-[#11110f] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#ccff00]"
-                >
-                  <Wand2 className="h-4 w-4" />
-                  Create Suggestion
-                </button>
               </div>
 
               <div className="border-2 border-[#11110f] bg-white p-4">
                 <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
                   Direct Actions
                 </div>
-                <div className="space-y-2">
+                <div className="space-y-3">
+                  <div className="border-2 border-[#11110f] bg-[#ccff00] px-3 py-3 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
+                    {mode === "edit"
+                      ? "Edit mode is live. Teacher changes sync to the student immediately."
+                      : "Switch to edit mode to type directly into the student's workspace in real time."}
+                  </div>
                   <button
                     type="button"
-                    disabled={mode !== "edit" || isSavingAction}
-                    onClick={() => void handleCommitTeacherEdit()}
-                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-[#ccff00] px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={isResolvingHelp || !currentTaskId}
+                    onClick={() => void handleResolve()}
+                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f] disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <CheckCircle className="h-4 w-4" />
-                    Commit Teacher Edit
+                    {isResolvingHelp ? "Resolving Help..." : "Mark Help Resolved"}
                   </button>
                   <button
                     type="button"
-                    onClick={async () => {
-                      await onResolveHelp();
-                      broadcastSessionEvent({
-                        type: "help-resolved",
-                        studentId: student.studentId,
-                        resolvedAt: new Date().toISOString(),
-                      });
-                    }}
-                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]"
-                  >
-                    <CheckCircle className="h-4 w-4" />
-                    Mark Help Resolved
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await onResetCode();
-                      if (currentTask?.initialCode) {
-                        editorRef.current?.replaceCode(currentTask.initialCode);
-                      }
-                      editorRef.current?.notifyInterventionsChanged();
-                    }}
-                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-rose-600"
+                    disabled={isResettingCode}
+                    onClick={() => void handleReset()}
+                    className="inline-flex w-full items-center justify-center gap-2 border-2 border-[#11110f] bg-white px-3 py-2 text-[10px] font-black uppercase tracking-[0.2em] text-rose-600 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <RotateCcw className="h-4 w-4" />
-                    Reset to Starter
+                    {isResettingCode ? "Resetting..." : "Reset to Starter"}
                   </button>
                 </div>
               </div>
@@ -446,18 +323,37 @@ const LiveSession = ({
                 <div className="mb-3 text-[10px] font-black uppercase tracking-[0.2em] text-[#11110f]">
                   Teacher Notes
                 </div>
+
+                <div className="mb-3 border-2 border-[#11110f] bg-[#fafafa] p-3">
+                  <div className="mb-1 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                    System
+                  </div>
+                  <div className="text-sm font-medium text-[#11110f]">
+                    Teacher focused on {student.profile?.fullName ?? "student"}.
+                  </div>
+                  <div className="mt-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                    Now
+                  </div>
+                </div>
+
                 <div className="space-y-3">
-                  {messages.map((message, index) => (
-                    <div key={`${message.sender}-${index}`} className="border-2 border-[#11110f] bg-[#fafafa] p-3">
-                      <div className="mb-1 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
-                        {message.sender}
-                      </div>
-                      <div className="text-sm font-medium text-[#11110f]">{message.text}</div>
-                      <div className="mt-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                        {message.time}
-                      </div>
+                  {teacherNotes.length === 0 ? (
+                    <div className="border-2 border-dashed border-gray-300 bg-[#fafafa] p-4 text-xs font-bold uppercase tracking-[0.2em] text-gray-400">
+                      Add a short response before resolving the student's help request.
                     </div>
-                  ))}
+                  ) : (
+                    teacherNotes.map((note) => (
+                      <div key={note.id} className="border-2 border-[#11110f] bg-[#fafafa] p-3">
+                        <div className="mb-1 text-[10px] font-black uppercase tracking-[0.2em] text-gray-500">
+                          Teacher
+                        </div>
+                        <div className="text-sm font-medium text-[#11110f]">{note.text}</div>
+                        <div className="mt-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                          {formatNoteTime(note.createdAt)}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             </div>
@@ -472,7 +368,7 @@ const LiveSession = ({
                 type="text"
                 value={newMessage}
                 onChange={(event) => setNewMessage(event.target.value)}
-                placeholder="Leave a short note..."
+                placeholder="Write the response the student should see..."
                 className="w-full rounded-none border-2 border-[#11110f] bg-white py-3 pl-4 pr-12 text-sm font-bold text-[#11110f] shadow-[4px_4px_0_#11110f] transition-all placeholder:text-gray-400 focus:outline-none"
               />
               <button
